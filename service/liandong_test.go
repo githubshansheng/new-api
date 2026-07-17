@@ -234,6 +234,53 @@ func TestParseLiandongOrderRecordsAcceptsEmptyNestedList(t *testing.T) {
 	assert.Empty(t, records)
 }
 
+func TestParseLiandongGoodsAcceptsUTF8BOM(t *testing.T) {
+	body := append(
+		[]byte{0xef, 0xbb, 0xbf},
+		[]byte(`{"data":{"records":[{"goods_key":"goods-1","name":"Product 1","goods_type":"card"}]}}`)...,
+	)
+
+	goods, err := parseLiandongGoods(body)
+
+	require.NoError(t, err)
+	require.Len(t, goods, 1)
+	assert.Equal(t, "goods-1", goods[0].GoodsKey)
+	assert.Equal(t, "Product 1", goods[0].Name)
+	assert.Equal(t, "card", goods[0].GoodsType)
+}
+
+func TestParseLiandongGoodsClassifiesHTMLWithoutLeakingBody(t *testing.T) {
+	_, err := parseLiandongGoods(
+		[]byte(`<html><body>merchant-token=secret-token</body></html>`),
+	)
+
+	require.ErrorContains(t, err, "received HTML instead of JSON")
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), "<html>")
+}
+
+func TestLiandongProviderResponseDiagnosticRedactsConfiguredSecrets(t *testing.T) {
+	diagnostic := liandongProviderResponseDiagnostic(
+		[]byte(
+			`{"message":"merchant-token=secret-token username=root-user password=root-password juuid=merchant-id goods_key=goods-1 contact=123456789012"}`,
+		),
+		"secret-token",
+		"root-user",
+		"root-password",
+		"merchant-id",
+		"goods-1",
+		"123456789012",
+	)
+
+	assert.Contains(t, diagnostic, `"message":`)
+	assert.NotContains(t, diagnostic, "secret-token")
+	assert.NotContains(t, diagnostic, "root-user")
+	assert.NotContains(t, diagnostic, "root-password")
+	assert.NotContains(t, diagnostic, "merchant-id")
+	assert.NotContains(t, diagnostic, "goods-1")
+	assert.NotContains(t, diagnostic, "123456789012")
+}
+
 func TestLiandongMerchantTokenOnlySentToOrderList(t *testing.T) {
 	type capturedRequest struct {
 		path  string

@@ -20,11 +20,8 @@ const (
 	systemTaskRunnerIdleInterval = 15 * time.Second
 	systemTaskLockTTL            = 60 * time.Second
 	logCleanupBatchSize          = 100
-
-	// systemTaskSchedulerInterval throttles how often the scheduler/stale-lock
-	// pass runs, independent of how often the runner wakes to claim tasks.
-	systemTaskSchedulerInterval = 15 * time.Second
-	systemTaskStaleLockInterval = 30 * time.Second
+	systemTaskStaleLockInterval  = 30 * time.Second
+	systemTaskMinimumDelay       = 100 * time.Millisecond
 )
 
 // SystemTaskHandler executes a claimed task of a specific type. Run owns the
@@ -111,9 +108,9 @@ var (
 	systemTaskWakeup = make(chan struct{}, 1)
 )
 
-// notifySystemTaskRunner wakes the runner without blocking. If a wakeup is
+// WakeSystemTaskRunner wakes the runner without blocking. If a wakeup is
 // already pending it is a no-op, which is fine since one pass drains all work.
-func notifySystemTaskRunner() {
+func WakeSystemTaskRunner() {
 	select {
 	case systemTaskWakeup <- struct{}{}:
 	default:
@@ -130,15 +127,10 @@ func StartSystemTaskRunner() {
 		gopool.Go(func() {
 			logger.LogInfo(context.Background(), fmt.Sprintf("system task runner started: runner=%s idle_interval=%s", runnerID, systemTaskRunnerIdleInterval))
 
-			ticker := time.NewTicker(systemTaskRunnerIdleInterval)
-			defer ticker.Stop()
-
-			var lastScheduler time.Time
+			timer := time.NewTimer(systemTaskMinimumDelay)
+			defer timer.Stop()
 			var lastStaleLockCleanup time.Time
-			runPass := func() {
-				// The scheduler/stale-lock pass is throttled independently of the
-				// claim pass: wakeups (e.g. a manual log cleanup) should claim
-				// immediately without re-running the scheduler every time.
+			runPass := func() time.Duration {
 				now := time.Now()
 				if now.Sub(lastStaleLockCleanup) >= systemTaskStaleLockInterval {
 					lastStaleLockCleanup = now
@@ -146,20 +138,30 @@ func StartSystemTaskRunner() {
 						logger.LogWarn(context.Background(), fmt.Sprintf("system task stale lock cleanup failed: %v", err))
 					}
 				}
-				if now.Sub(lastScheduler) >= systemTaskSchedulerInterval {
-					lastScheduler = now
-					runSystemTaskScheduler()
-				}
+				nextDelay := runSystemTaskScheduler()
 				runSystemTaskClaimPass(runnerID)
+				if nextDelay < systemTaskMinimumDelay {
+					return systemTaskMinimumDelay
+				}
+				if nextDelay > systemTaskRunnerIdleInterval {
+					return systemTaskRunnerIdleInterval
+				}
+				return nextDelay
 			}
 
-			runPass()
 			for {
 				select {
-				case <-ticker.C:
+				case <-timer.C:
 				case <-systemTaskWakeup:
 				}
-				runPass()
+				nextDelay := runPass()
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(nextDelay)
 			}
 		})
 	})
@@ -191,7 +193,7 @@ func StartLogCleanupTask(targetTimestamp int64) (*model.SystemTask, error) {
 		}
 		return nil, err
 	}
-	notifySystemTaskRunner()
+	WakeSystemTaskRunner()
 	return task, nil
 }
 
@@ -215,7 +217,7 @@ func EnqueueSystemTask(taskType string, payload any) (*model.SystemTask, bool, e
 		}
 		return nil, false, err
 	}
-	notifySystemTaskRunner()
+	WakeSystemTaskRunner()
 	return task, true, nil
 }
 
@@ -260,8 +262,9 @@ func runSystemTaskClaimPass(runnerID string) {
 // handler whose interval has elapsed since its last run and that has no active
 // row. The task active_key unique index deduplicates concurrent creation while
 // the per-type lock guarantees only one runner executes the task.
-func runSystemTaskScheduler() {
-	now := common.GetTimestamp()
+func runSystemTaskScheduler() time.Duration {
+	nowTime := time.Now()
+	nextDelay := systemTaskRunnerIdleInterval
 	handlers := registeredSystemTaskHandlers()
 	scheduledHandlers := make([]ScheduledSystemTaskHandler, 0, len(handlers))
 	taskTypes := make([]string, 0, len(handlers))
@@ -276,16 +279,28 @@ func runSystemTaskScheduler() {
 	latestTasks, err := model.GetLatestSystemTasks(taskTypes)
 	if err != nil {
 		logger.LogWarn(context.Background(), fmt.Sprintf("system task scheduler query failed: %v", err))
-		return
+		return nextDelay
 	}
 	for _, scheduled := range scheduledHandlers {
+		interval := scheduled.Interval()
+		if interval < time.Second {
+			interval = time.Second
+		}
 		latest := latestTasks[scheduled.Type()]
 		if latest != nil {
 			if latest.Status == model.SystemTaskStatusPending || latest.Status == model.SystemTaskStatusRunning {
+				if interval < nextDelay {
+					nextDelay = interval
+				}
 				continue // an active row already exists
 			}
-			if now-latest.UpdatedAt < int64(scheduled.Interval().Seconds()) {
-				continue // not due yet
+			dueAt := time.Unix(latest.UpdatedAt, 0).Add(interval)
+			if dueAt.After(nowTime) {
+				delay := time.Until(dueAt)
+				if delay < nextDelay {
+					nextDelay = delay
+				}
+				continue
 			}
 		}
 		if _, err := model.CreateSystemTask(scheduled.Type(), scheduled.NewPayload(), nil); err != nil {
@@ -299,7 +314,11 @@ func runSystemTaskScheduler() {
 			logger.LogWarn(context.Background(), fmt.Sprintf("system task scheduler create failed: type=%s err=%v", scheduled.Type(), err))
 			continue
 		}
+		if interval < nextDelay {
+			nextDelay = interval
+		}
 	}
+	return nextDelay
 }
 
 // runWithLeaseHeartbeat renews the per-type lock on a background ticker while
@@ -333,6 +352,7 @@ func runWithLeaseHeartbeat(task *model.SystemTask, runnerID string, fn func(ctx 
 
 	fn(ctx)
 	close(done)
+	WakeSystemTaskRunner()
 }
 
 func runLogCleanupTask(ctx context.Context, task *model.SystemTask, runnerID string) {

@@ -54,6 +54,11 @@ func TestMain(m *testing.M) {
 		&SystemInstance{},
 		&SystemTask{},
 		&SystemTaskLock{},
+		&LiandongProduct{},
+		&LiandongOrder{},
+		&LiandongProductInventoryCode{},
+		&LiandongProductThumbnail{},
+		&LiandongUserOperationLease{},
 	); err != nil {
 		panic("failed to migrate: " + err.Error())
 	}
@@ -83,6 +88,11 @@ func truncateTables(t *testing.T) {
 		DB.Exec("DELETE FROM system_instances")
 		DB.Exec("DELETE FROM system_task_locks")
 		DB.Exec("DELETE FROM system_tasks")
+		DB.Exec("DELETE FROM liandong_product_inventory_codes")
+		DB.Exec("DELETE FROM liandong_product_thumbnails")
+		DB.Exec("DELETE FROM liandong_user_operation_leases")
+		DB.Exec("DELETE FROM liandong_orders")
+		DB.Exec("DELETE FROM liandong_products")
 	})
 }
 

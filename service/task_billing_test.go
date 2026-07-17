@@ -45,10 +45,18 @@ func TestMain(m *testing.M) {
 		&model.Token{},
 		&model.Log{},
 		&model.Channel{},
+		&model.Option{},
 		&model.TopUp{},
+		&model.SubscriptionPlan{},
+		&model.SubscriptionOrder{},
 		&model.UserSubscription{},
 		&model.SystemTask{},
 		&model.SystemTaskLock{},
+		&model.LiandongProduct{},
+		&model.LiandongOrder{},
+		&model.LiandongProductInventoryCode{},
+		&model.LiandongProductThumbnail{},
+		&model.LiandongUserOperationLease{},
 	); err != nil {
 		panic("failed to migrate: " + err.Error())
 	}
@@ -68,10 +76,18 @@ func truncate(t *testing.T) {
 		model.DB.Exec("DELETE FROM tokens")
 		model.DB.Exec("DELETE FROM logs")
 		model.DB.Exec("DELETE FROM channels")
+		model.DB.Exec("DELETE FROM options")
 		model.DB.Exec("DELETE FROM top_ups")
+		model.DB.Exec("DELETE FROM subscription_orders")
+		model.DB.Exec("DELETE FROM subscription_plans")
 		model.DB.Exec("DELETE FROM user_subscriptions")
 		model.DB.Exec("DELETE FROM system_task_locks")
 		model.DB.Exec("DELETE FROM system_tasks")
+		model.DB.Exec("DELETE FROM liandong_product_inventory_codes")
+		model.DB.Exec("DELETE FROM liandong_product_thumbnails")
+		model.DB.Exec("DELETE FROM liandong_user_operation_leases")
+		model.DB.Exec("DELETE FROM liandong_orders")
+		model.DB.Exec("DELETE FROM liandong_products")
 	})
 }
 

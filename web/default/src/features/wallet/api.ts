@@ -39,6 +39,8 @@ import type {
   WaffoPaymentResponse,
   WaffoPancakePaymentRequest,
   WaffoPancakePaymentResponse,
+  LiandongProductsResponse,
+  LiandongPaymentResponse,
 } from './types'
 
 // ============================================================================
@@ -166,6 +168,47 @@ export async function requestWaffoPancakePayment(
   const res = await api.post('/api/user/waffo-pancake/pay', request, {
     skipBusinessError: true,
   } as Record<string, unknown>)
+  return res.data
+}
+
+export async function getLiandongProducts(): Promise<LiandongProductsResponse> {
+  const res = await api.get('/api/payment/liandong/products')
+  return res.data
+}
+
+export async function createLiandongOrder(
+  productId: number
+): Promise<LiandongPaymentResponse> {
+  const res = await api.post(
+    '/api/payment/liandong/orders',
+    { product_id: productId },
+    { skipBusinessError: true, skipErrorHandler: true }
+  )
+  return res.data
+}
+
+export async function getLiandongOrder(
+  localTradeNo: string
+): Promise<LiandongPaymentResponse> {
+  const res = await api.get(
+    `/api/payment/liandong/orders/${encodeURIComponent(localTradeNo)}`,
+    {
+      disableDuplicate: true,
+      skipBusinessError: true,
+      skipErrorHandler: true,
+    }
+  )
+  return res.data
+}
+
+export async function closeLiandongOrderForUser(
+  localTradeNo: string
+): Promise<LiandongPaymentResponse> {
+  const res = await api.post(
+    `/api/payment/liandong/orders/${encodeURIComponent(localTradeNo)}/close`,
+    null,
+    { skipBusinessError: true, skipErrorHandler: true }
+  )
   return res.data
 }
 

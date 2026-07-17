@@ -16,7 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Gift, ExternalLink, Loader2, Receipt, WalletCards } from 'lucide-react'
+import {
+  Gift,
+  ExternalLink,
+  Loader2,
+  QrCode,
+  Receipt,
+  WalletCards,
+} from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -50,8 +57,10 @@ import type {
   TopupInfo,
   CreemProduct,
   WaffoPayMethod,
+  LiandongProduct,
 } from '../types'
 import { CreemProductsSection } from './creem-products-section'
+import { LiandongProductCard } from './liandong-product-card'
 
 interface RechargeFormCardProps {
   topupInfo: TopupInfo | null
@@ -81,6 +90,8 @@ interface RechargeFormCardProps {
   waffoMinTopup?: number
   onWaffoMethodSelect?: (method: WaffoPayMethod, index: number) => void
   enableWaffoPancakeTopup?: boolean
+  liandongProducts?: LiandongProduct[]
+  onLiandongProductSelect?: (product: LiandongProduct) => void
 }
 
 export function RechargeFormCard({
@@ -111,6 +122,8 @@ export function RechargeFormCard({
   waffoMinTopup,
   onWaffoMethodSelect,
   enableWaffoPancakeTopup,
+  liandongProducts,
+  onLiandongProductSelect,
 }: RechargeFormCardProps) {
   const { t } = useTranslation()
   const [localAmount, setLocalAmount] = useState(topupAmount.toString())
@@ -139,6 +152,9 @@ export function RechargeFormCard({
     Array.isArray(waffoPayMethods) && waffoPayMethods.length > 0
   const minTopup = getMinTopupAmount(topupInfo)
   const redemptionEnabled = topupInfo?.enable_redemption !== false
+  const hasLiandongProducts =
+    Array.isArray(liandongProducts) && liandongProducts.length > 0
+  const showNoPaymentAlert = !hasAnyTopup && !hasLiandongProducts
 
   if (loading) {
     return (
@@ -213,8 +229,30 @@ export function RechargeFormCard({
       }
       contentClassName='space-y-4 sm:space-y-6'
     >
+      {hasLiandongProducts && onLiandongProductSelect && (
+        <div className='space-y-2.5 sm:space-y-3'>
+          <div className='flex items-center gap-2'>
+            <IconBadge tone='info' size='xs'>
+              <QrCode />
+            </IconBadge>
+            <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+              {t('Liandong fixed products')}
+            </Label>
+          </div>
+          <div className='grid grid-cols-[repeat(auto-fill,220px)] justify-center gap-3 sm:justify-start'>
+            {liandongProducts.map((product) => (
+              <LiandongProductCard
+                key={product.id}
+                product={product}
+                onSelect={onLiandongProductSelect}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Online Topup Section */}
-      {hasAnyTopup ? (
+      {hasAnyTopup && (
         <div className='space-y-4 sm:space-y-6'>
           {hasConfigurableTopup && (
             <>
@@ -263,11 +301,11 @@ export function RechargeFormCard({
                             )}
                           </div>
                           <div className='text-muted-foreground mt-1.5 w-full text-xs sm:mt-2'>
-                            Pay {formatCurrency(actualPrice)}
+                            {t('Pay')} {formatCurrency(actualPrice)}
                             {hasDiscount && savedAmount > 0 && (
                               <span className='text-green-600'>
                                 {' '}
-                                • Save {formatCurrency(savedAmount)}
+                                • {t('Save')} {formatCurrency(savedAmount)}
                               </span>
                             )}
                           </div>
@@ -471,11 +509,26 @@ export function RechargeFormCard({
             </>
           )}
         </div>
-      ) : (
+      )}
+
+      {showNoPaymentAlert && (
         <Alert>
-          <AlertDescription>
-            {t(
-              'Online topup is not enabled. Please use redemption code or contact administrator.'
+          <AlertDescription className='flex flex-wrap items-center gap-x-1 gap-y-2'>
+            <span>
+              {t(
+                'Online topup is not enabled. Please use redemption code or contact administrator.'
+              )}
+            </span>
+            {redemptionEnabled && topupLink && (
+              <a
+                href={topupLink}
+                target='_blank'
+                rel='noopener noreferrer'
+                className='inline-flex items-center gap-1 font-medium underline underline-offset-4'
+              >
+                {t('Get one here')}
+                <ExternalLink className='h-3 w-3' />
+              </a>
             )}
           </AlertDescription>
         </Alert>
@@ -529,7 +582,7 @@ export function RechargeFormCard({
               {t('Redeem')}
             </Button>
           </div>
-          {topupLink && (
+          {topupLink && !showNoPaymentAlert && (
             <p className='text-muted-foreground text-xs'>
               {t('Need a redemption code?')}{' '}
               <a

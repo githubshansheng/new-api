@@ -107,6 +107,65 @@
 
 ## 🚀 Quick Start
 
+### Build and Run from Source (No Docker Required)
+
+**Prerequisites:** Go 1.22+, Bun, and Git.
+
+Runtime configuration is loaded from the `.env` file in the project root. See the
+[environment variable documentation](https://docs.newapi.pro/en/docs/installation/config-maintenance/environment-variables)
+for available options.
+
+**Windows:**
+
+```powershell
+.\new-api.cmd build
+.\new-api.cmd start
+.\new-api.cmd start --port 8080
+.\new-api.cmd status
+.\new-api.cmd stop
+.\new-api.cmd restart
+.\new-api.cmd rebuild
+.\new-api.cmd logs
+```
+
+**Linux:**
+
+```bash
+chmod +x new-api.sh
+./new-api.sh build
+./new-api.sh start
+./new-api.sh start --port 8080
+./new-api.sh status
+./new-api.sh stop
+./new-api.sh restart
+./new-api.sh rebuild
+./new-api.sh logs
+```
+
+| Command | Description |
+|------|------|
+| `build` | Install Bun dependencies, build the default and classic frontends, and build the Go binary with embedded frontend assets |
+| `start` | Start the service; automatically build it first when the binary is missing |
+| `stop` | Stop the managed background service |
+| `restart` | Restart the service without rebuilding |
+| `rebuild` | Stop the service, rebuild all source code, and start it again |
+| `status` | Show the process and HTTP health status |
+| `logs` | Follow the managed process stdout and stderr logs |
+
+Use `.\new-api.cmd start --port 8080` on Windows or
+`./new-api.sh start --port 8080` on Linux to select a startup port. The `--port`
+option also works with `restart` and `rebuild`, accepts values from `1` to
+`65535`, and overrides `PORT` and the `PORT` value in `.env`. The default address
+is `http://localhost:3000`.
+
+The frontend assets are embedded in the Go binary, so the frontend and backend
+are served from the same port without requiring Nginx. Nginx remains optional
+for HTTPS, domain routing, or load balancing.
+
+Build outputs are written to `build/new-api.exe` on Windows and `build/new-api`
+on Linux. Process metadata and stdout/stderr logs are stored in `.run/`, while
+application logs are stored in `logs/`.
+
 ### Using Docker Compose (Recommended)
 
 ```bash

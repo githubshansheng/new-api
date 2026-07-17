@@ -107,6 +107,61 @@
 
 ## 🚀 快速开始
 
+### 从源码构建并启动（无需 Docker）
+
+**环境要求：** Go 1.22+、Bun 和 Git。
+
+运行时配置从项目根目录的 `.env` 文件加载，可用配置项请参考
+[环境变量文档](https://docs.newapi.pro/zh/docs/installation/config-maintenance/environment-variables)。
+
+**Windows：**
+
+```powershell
+.\new-api.cmd build
+.\new-api.cmd start
+.\new-api.cmd start --port 8080
+.\new-api.cmd status
+.\new-api.cmd stop
+.\new-api.cmd restart
+.\new-api.cmd rebuild
+.\new-api.cmd logs
+```
+
+**Linux：**
+
+```bash
+chmod +x new-api.sh
+./new-api.sh build
+./new-api.sh start
+./new-api.sh start --port 8080
+./new-api.sh status
+./new-api.sh stop
+./new-api.sh restart
+./new-api.sh rebuild
+./new-api.sh logs
+```
+
+| 命令 | 说明 |
+|------|------|
+| `build` | 安装 Bun 依赖，构建 default/classic 前端，再构建包含前端静态资源的 Go 可执行文件 |
+| `start` | 启动服务；可执行文件不存在时会先自动构建 |
+| `stop` | 停止脚本管理的后台服务 |
+| `restart` | 不重新构建，直接重启服务 |
+| `rebuild` | 停止服务，重新构建全部源码并启动 |
+| `status` | 查看进程状态和 HTTP 健康检查结果 |
+| `logs` | 持续查看脚本管理进程的标准输出和错误日志 |
+
+Windows 可通过 `.\new-api.cmd start --port 8080`、Linux 可通过
+`./new-api.sh start --port 8080` 指定启动端口。`--port` 同样适用于 `restart`
+和 `rebuild`，有效范围为 `1-65535`，其优先级高于环境变量 `PORT` 以及 `.env`
+中的 `PORT`。默认访问地址为 `http://localhost:3000`。
+
+前端静态资源会嵌入 Go 可执行文件，因此前后端可以直接通过同一个端口访问，
+不依赖 Nginx；如需配置 HTTPS、域名转发或负载均衡，仍可按需使用 Nginx。
+
+Windows 构建产物为 `build/new-api.exe`，Linux 构建产物为 `build/new-api`。
+进程信息及标准输出/错误日志保存在 `.run/`，应用日志保存在 `logs/`。
+
 ### 使用 Docker Compose（推荐）
 
 ```bash

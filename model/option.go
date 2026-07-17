@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 type Option struct {
@@ -231,12 +232,18 @@ func UpdateOptionsBulk(values map[string]string) error {
 	}
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		for k, v := range values {
+			writeDB := tx
+			if k == "LiandongMerchantToken" ||
+				k == "LiandongPassword" ||
+				k == "LiandongUsername" {
+				writeDB = tx.Session(&gorm.Session{Logger: gormlogger.Discard})
+			}
 			option := Option{Key: k}
-			if err := tx.FirstOrCreate(&option, Option{Key: k}).Error; err != nil {
+			if err := writeDB.FirstOrCreate(&option, Option{Key: k}).Error; err != nil {
 				return err
 			}
 			option.Value = v
-			if err := tx.Save(&option).Error; err != nil {
+			if err := writeDB.Save(&option).Error; err != nil {
 				return err
 			}
 		}
@@ -254,8 +261,17 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	if strings.HasPrefix(key, "Liandong") {
+		common.OptionMapRWMutex.Lock()
+		delete(common.OptionMap, key)
+		common.OptionMapRWMutex.Unlock()
+		return nil
+	}
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
+	if common.OptionMap == nil {
+		common.OptionMap = make(map[string]string)
+	}
 	common.OptionMap[key] = value
 
 	// 检查是否是模型配置 - 使用更规范的方式处理

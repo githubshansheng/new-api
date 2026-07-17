@@ -24,9 +24,11 @@ import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
 
+import { getLiandongProducts } from './api'
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
 import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
+import { LiandongPaymentDialog } from './components/dialogs/liandong-payment-dialog'
 import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
 import { TransferDialog } from './components/dialogs/transfer-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
@@ -52,6 +54,7 @@ import type {
   PaymentMethod,
   PresetAmount,
   CreemProduct,
+  LiandongProduct,
 } from './types'
 
 interface WalletProps {
@@ -75,6 +78,13 @@ export function Wallet(props: WalletProps) {
   const [selectedCreemProduct, setSelectedCreemProduct] =
     useState<CreemProduct | null>(null)
   const [showSubscriptionPanel, setShowSubscriptionPanel] = useState(true)
+  const [liandongProducts, setLiandongProducts] = useState<LiandongProduct[]>(
+    []
+  )
+  const [selectedLiandongProduct, setSelectedLiandongProduct] =
+    useState<LiandongProduct | null>(null)
+  const [liandongDialogOpen, setLiandongDialogOpen] = useState(false)
+  const [liandongAttemptId, setLiandongAttemptId] = useState(0)
 
   const { status } = useStatus()
   const { currency } = useSystemConfig()
@@ -124,6 +134,24 @@ export function Wallet(props: WalletProps) {
   useEffect(() => {
     fetchUser()
   }, [fetchUser])
+
+  useEffect(() => {
+    let cancelled = false
+    const fetchProducts = async () => {
+      try {
+        const response = await getLiandongProducts()
+        if (!cancelled && response.success) {
+          setLiandongProducts(response.data || [])
+        }
+      } catch {
+        if (!cancelled) setLiandongProducts([])
+      }
+    }
+    void fetchProducts()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (props.initialShowHistory) {
@@ -259,6 +287,12 @@ export function Wallet(props: WalletProps) {
     []
   )
 
+  const handleLiandongProductSelect = (product: LiandongProduct) => {
+    setSelectedLiandongProduct(product)
+    setLiandongAttemptId((current) => current + 1)
+    setLiandongDialogOpen(true)
+  }
+
   return (
     <>
       <SectionPageLayout>
@@ -305,6 +339,10 @@ export function Wallet(props: WalletProps) {
                   enableWaffoPancakeTopup={
                     topupInfo?.enable_waffo_pancake_topup
                   }
+                  liandongProducts={liandongProducts.filter(
+                    (product) => product.business_type === 'quota'
+                  )}
+                  onLiandongProductSelect={handleLiandongProductSelect}
                 />
               </div>
 
@@ -313,6 +351,9 @@ export function Wallet(props: WalletProps) {
                 onAvailabilityChange={handleSubscriptionAvailabilityChange}
                 userQuota={user?.quota}
                 onPurchaseSuccess={fetchUser}
+                liandongProducts={liandongProducts.filter(
+                  (product) => product.business_type === 'subscription'
+                )}
               />
             </div>
 
@@ -361,6 +402,14 @@ export function Wallet(props: WalletProps) {
         onConfirm={handleCreemConfirm}
         product={selectedCreemProduct}
         processing={creemProcessing}
+      />
+
+      <LiandongPaymentDialog
+        open={liandongDialogOpen}
+        onOpenChange={setLiandongDialogOpen}
+        product={selectedLiandongProduct}
+        attemptId={liandongAttemptId}
+        onPaymentSuccess={fetchUser}
       />
     </>
   )

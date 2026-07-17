@@ -34,6 +34,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
+import type { LiandongProduct } from '@/features/wallet/types'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { formatQuota } from '@/lib/format'
 import { DEFAULT_CURRENCY_CONFIG } from '@/stores/system-config-store'
@@ -66,6 +67,8 @@ interface Props {
   purchaseCount?: number
   userQuota?: number
   onPurchaseSuccess?: () => void | Promise<void>
+  liandongProduct?: LiandongProduct
+  onLiandongPayment?: (product: LiandongProduct) => void
 }
 
 export function SubscriptionPurchaseDialog(props: Props) {
@@ -91,7 +94,10 @@ export function SubscriptionPurchaseDialog(props: Props) {
     props.enableWaffoPancake && !!plan.waffo_pancake_product_id
   const hasEpay =
     props.enableOnlineTopUp && (props.epayMethods || []).length > 0
-  const hasAnyPayment = hasStripe || hasCreem || hasWaffoPancake || hasEpay
+  const liandongProduct = props.liandongProduct
+  const hasLiandong = !!liandongProduct && !!props.onLiandongPayment
+  const hasAnyPayment =
+    hasStripe || hasCreem || hasWaffoPancake || hasEpay || hasLiandong
   const selectedEpayMethodLabel =
     (props.epayMethods || []).find((m) => m.type === selectedEpayMethod)
       ?.name ||
@@ -402,15 +408,23 @@ export function SubscriptionPurchaseDialog(props: Props) {
                 )}
               </div>
             )}
+            {hasLiandong && liandongProduct && (
+              <Button
+                variant='outline'
+                className='w-full'
+                onClick={() => props.onLiandongPayment?.(liandongProduct)}
+                disabled={paying || limitReached}
+              >
+                {t('Pay with Liandong')}
+              </Button>
+            )}
             {hasEpay && (
               <div className='grid grid-cols-[minmax(0,1fr)_auto] gap-2'>
                 <Select
-                  items={[
-                    ...(props.epayMethods || []).map((m) => ({
-                      value: m.type,
-                      label: m.name || m.type,
-                    })),
-                  ]}
+                  items={(props.epayMethods || []).map((m) => ({
+                    value: m.type,
+                    label: m.name || m.type,
+                  }))}
                   value={selectedEpayMethod}
                   onValueChange={(v) => v !== null && setSelectedEpayMethod(v)}
                   disabled={limitReached}

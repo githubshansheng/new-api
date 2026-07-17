@@ -183,6 +183,16 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/subscription/epay/notify", controller.SubscriptionEpayNotify)
 		apiRouter.GET("/subscription/epay/return", controller.SubscriptionEpayReturn)
 		apiRouter.POST("/subscription/epay/return", anonymousRequestBodyLimit, controller.SubscriptionEpayReturn)
+
+		apiRouter.GET("/payment/liandong/products/:id/thumbnail", controller.GetLiandongProductThumbnail)
+		liandongRoute := apiRouter.Group("/payment/liandong")
+		liandongRoute.Use(middleware.UserAuth())
+		{
+			liandongRoute.GET("/products", controller.ListLiandongProducts)
+			liandongRoute.POST("/orders", middleware.CriticalRateLimit(), controller.CreateLiandongOrder)
+			liandongRoute.GET("/orders/:local_trade_no", controller.GetLiandongOrder)
+			liandongRoute.POST("/orders/:local_trade_no/close", middleware.CriticalRateLimit(), controller.CloseLiandongOrderForUser)
+		}
 		optionRoute := apiRouter.Group("/option")
 		optionRoute.Use(middleware.RootAuth())
 		{
@@ -198,6 +208,21 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.POST("/waffo-pancake/save", controller.SaveWaffoPancake)
 			optionRoute.POST("/waffo-pancake/subscription-product", controller.CreateWaffoPancakeSubscriptionProduct)
 			optionRoute.GET("/waffo-pancake/subscription-product-options", controller.ListWaffoPancakeSubscriptionProductOptions)
+			optionRoute.GET("/liandong", controller.GetLiandongSettings)
+			optionRoute.PUT("/liandong", controller.UpdateLiandongSettings)
+			optionRoute.GET("/liandong/products", controller.RootListLiandongProducts)
+			optionRoute.POST("/liandong/products", controller.RootCreateLiandongProduct)
+			optionRoute.PATCH("/liandong/products/:id", controller.RootUpdateLiandongProduct)
+			optionRoute.POST("/liandong/products/:id/inventory", controller.RootAddLiandongInventory)
+			optionRoute.POST("/liandong/products/:id/inventory/disable", controller.RootDisableLiandongInventory)
+			optionRoute.PUT("/liandong/products/:id/thumbnail", controller.RootUploadLiandongThumbnail)
+			optionRoute.DELETE("/liandong/products/:id/thumbnail", controller.RootDeleteLiandongThumbnail)
+			optionRoute.GET("/liandong/provider-goods", controller.RootListLiandongProviderGoods)
+			optionRoute.GET("/liandong/orders", controller.RootListLiandongOrders)
+			optionRoute.POST("/liandong/orders/:local_trade_no/requeue", middleware.CriticalRateLimit(), controller.RootRequeueLiandongOrder)
+			optionRoute.POST("/liandong/orders/:local_trade_no/close", middleware.CriticalRateLimit(), controller.RootCloseLiandongOrder)
+			optionRoute.POST("/liandong/orders/:local_trade_no/manual-fulfill", middleware.CriticalRateLimit(), controller.RootManualFulfillLiandongOrder)
+			optionRoute.POST("/liandong/orders/:local_trade_no/retry-fulfillment", middleware.CriticalRateLimit(), controller.RootRetryLiandongFulfillment)
 		}
 
 		// Custom OAuth provider management (root only)

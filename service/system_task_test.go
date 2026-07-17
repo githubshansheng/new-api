@@ -107,6 +107,27 @@ func TestSystemTaskSchedulerSkipsDisabled(t *testing.T) {
 	assert.Equal(t, int64(0), countSystemTasks(t, handler.taskType))
 }
 
+func TestSystemTaskSchedulerHonorsOneSecondInterval(t *testing.T) {
+	truncate(t)
+
+	handler := &stubScheduledHandler{
+		taskType: "test_one_second_schedule",
+		enabled:  true,
+		interval: time.Second,
+	}
+	withSystemTaskRegistry(t, handler)
+
+	createdDelay := runSystemTaskScheduler()
+	assert.Equal(t, int64(1), countSystemTasks(t, handler.taskType))
+	assert.Positive(t, createdDelay)
+	assert.LessOrEqual(t, createdDelay, time.Second)
+
+	activeDelay := runSystemTaskScheduler()
+	assert.Equal(t, int64(1), countSystemTasks(t, handler.taskType))
+	assert.Positive(t, activeDelay)
+	assert.LessOrEqual(t, activeDelay, time.Second)
+}
+
 func TestSystemTaskClaimPassDispatchesByType(t *testing.T) {
 	truncate(t)
 

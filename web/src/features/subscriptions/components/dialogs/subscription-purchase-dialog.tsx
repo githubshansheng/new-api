@@ -27,6 +27,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
 import { Separator } from '@/components/ui/separator'
+import type { LiandongProduct } from '@/features/wallet/types'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { formatQuota } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -60,6 +61,8 @@ interface Props {
   purchaseCount?: number
   userQuota?: number
   onPurchaseSuccess?: () => void | Promise<void>
+  liandongProduct?: LiandongProduct
+  onLiandongPayment?: (product: LiandongProduct) => void
 }
 
 export function SubscriptionPurchaseDialog(props: Props) {
@@ -85,7 +88,10 @@ export function SubscriptionPurchaseDialog(props: Props) {
     props.enableWaffoPancake && !!plan.waffo_pancake_product_id
   const hasEpay =
     props.enableOnlineTopUp && (props.epayMethods || []).length > 0
-  const hasAnyPayment = hasStripe || hasCreem || hasWaffoPancake || hasEpay
+  const liandongProduct = props.liandongProduct
+  const hasLiandong = !!liandongProduct && !!props.onLiandongPayment
+  const hasAnyPayment =
+    hasStripe || hasCreem || hasWaffoPancake || hasEpay || hasLiandong
   const totalAmount = Number(plan.total_amount || 0)
   const price = Number(plan.price_amount || 0).toFixed(2)
   const quotaPerUnit =
@@ -370,6 +376,16 @@ export function SubscriptionPurchaseDialog(props: Props) {
                   </Button>
                 )}
               </div>
+            )}
+            {hasLiandong && liandongProduct && (
+              <Button
+                variant='outline'
+                className='w-full'
+                onClick={() => props.onLiandongPayment?.(liandongProduct)}
+                disabled={paying || limitReached}
+              >
+                {t('Pay with Liandong')}
+              </Button>
             )}
             {hasEpay && (
               <div className='grid grid-cols-[minmax(0,1fr)_auto] gap-2'>

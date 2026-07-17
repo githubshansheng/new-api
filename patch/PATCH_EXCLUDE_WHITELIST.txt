@@ -1,0 +1,79 @@
+# Patch packaging exclusion whitelist.
+# Entries are repository-relative Git pathspecs.
+# Keep runtime source code and i18n resources out of this list.
+
+# Repository and agent configuration
+.gitattributes
+.gitignore
+.github/**
+.agents/**
+.codex/**
+AGENTS.md
+.run/**
+patch/**
+docs/MyResearch/**
+new-api.cmd
+new-api.ps1
+
+# Environment and deployment configuration
+.env
+.env.*
+**/.env
+**/.env.*
+Dockerfile
+Dockerfile.*
+**/Dockerfile
+**/Dockerfile.*
+docker-compose.yml
+docker-compose.yaml
+docker-compose.*.yml
+docker-compose.*.yaml
+**/docker-compose.yml
+**/docker-compose.yaml
+**/docker-compose.*.yml
+**/docker-compose.*.yaml
+
+# Dependency manifests and lock files
+go.mod
+go.sum
+package.json
+package-lock.json
+bun.lock
+bun.lockb
+yarn.lock
+pnpm-lock.yaml
+**/package.json
+**/package-lock.json
+**/bun.lock
+**/bun.lockb
+**/yarn.lock
+**/pnpm-lock.yaml
+
+# Build, lint, formatter, and deployment tool configuration
+Makefile
+**/Makefile
+**/tsconfig*.json
+**/jsconfig*.json
+**/components.json
+**/i18next.config.js
+**/postcss.config.js
+**/tailwind.config.js
+**/rsbuild.config.ts
+**/knip.config.ts
+**/vercel.json
+**/netlify.toml
+**/cz.yaml
+**/.oxfmtrc.json
+**/.oxlintrc.json
+
+# Local runtime and generated output
+.cache
+.run
+build
+logs
+build/**
+**/dist/**
+**/node_modules/**
+**/.cache/**
+**/.run/**
+logs/**

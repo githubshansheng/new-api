@@ -59,13 +59,16 @@ import type {
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import type { PaymentMethod, TopupInfo } from '../types'
+import type { LiandongProduct, PaymentMethod, TopupInfo } from '../types'
+import { LiandongPaymentDialog } from './dialogs/liandong-payment-dialog'
+import { LiandongProductCard } from './liandong-product-card'
 
 interface SubscriptionPlansCardProps {
   topupInfo: TopupInfo | null
   onAvailabilityChange?: (available: boolean) => void
   userQuota?: number
   onPurchaseSuccess?: () => void | Promise<void>
+  liandongProducts?: LiandongProduct[]
 }
 
 function getEpayMethods(payMethods: PaymentMethod[] = []): PaymentMethod[] {
@@ -92,13 +95,9 @@ function getBillingPreferenceLabel(
   }
 }
 
-export function SubscriptionPlansCard({
-  topupInfo,
-  onAvailabilityChange,
-  userQuota,
-  onPurchaseSuccess,
-}: SubscriptionPlansCardProps) {
+export function SubscriptionPlansCard(props: SubscriptionPlansCardProps) {
   const { t } = useTranslation()
+  const onAvailabilityChange = props.onAvailabilityChange
 
   const [plans, setPlans] = useState<PlanRecord[]>([])
   const [activeSubscriptions, setActiveSubscriptions] = useState<
@@ -114,14 +113,23 @@ export function SubscriptionPlansCard({
 
   const [purchaseOpen, setPurchaseOpen] = useState(false)
   const [selectedPlan, setSelectedPlan] = useState<PlanRecord | null>(null)
+  const [selectedLiandongProduct, setSelectedLiandongProduct] =
+    useState<LiandongProduct | null>(null)
+  const [liandongPaymentOpen, setLiandongPaymentOpen] = useState(false)
+  const [liandongAttemptId, setLiandongAttemptId] = useState(0)
 
-  const enableStripe = !!topupInfo?.enable_stripe_topup
-  const enableCreem = !!topupInfo?.enable_creem_topup
-  const enableWaffoPancake = !!topupInfo?.enable_waffo_pancake_topup
-  const enableOnlineTopUp = !!topupInfo?.enable_online_topup
+  const configuredLiandongProducts = props.liandongProducts ?? []
+  const liandongEnabled =
+    props.topupInfo?.enable_liandong_topup === true ||
+    configuredLiandongProducts.length > 0
+  const liandongProducts = liandongEnabled ? configuredLiandongProducts : []
+  const enableStripe = !!props.topupInfo?.enable_stripe_topup
+  const enableCreem = !!props.topupInfo?.enable_creem_topup
+  const enableWaffoPancake = !!props.topupInfo?.enable_waffo_pancake_topup
+  const enableOnlineTopUp = !!props.topupInfo?.enable_online_topup
   const epayMethods = useMemo(
-    () => getEpayMethods(topupInfo?.pay_methods),
-    [topupInfo?.pay_methods]
+    () => getEpayMethods(props.topupInfo?.pay_methods),
+    [props.topupInfo?.pay_methods]
   )
 
   const fetchPlans = useCallback(async () => {
@@ -189,7 +197,10 @@ export function SubscriptionPlansCard({
 
   const hasActive = activeSubscriptions.length > 0
   const hasAny = allSubscriptions.length > 0
-  const isAvailable = loading || plans.length > 0 || hasAny
+  const hasPurchasablePlans = liandongEnabled
+    ? liandongProducts.length > 0
+    : plans.length > 0
+  const isAvailable = loading || hasPurchasablePlans || hasAny
   const disablePref = !hasActive
   const isSubPref =
     billingPreference === 'subscription_first' ||
@@ -253,7 +264,7 @@ export function SubscriptionPlansCard({
     )
   }
 
-  if (plans.length === 0 && !hasAny) {
+  if (!hasPurchasablePlans && !hasAny) {
     return null
   }
 
@@ -267,6 +278,27 @@ export function SubscriptionPlansCard({
         disableHoverEffect
         contentClassName='space-y-4 sm:space-y-5'
       >
+        {liandongProducts.length > 0 && (
+          <div className='space-y-3'>
+            <p className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+              {t('Liandong fixed products')}
+            </p>
+            <div className='grid grid-cols-[repeat(auto-fill,220px)] justify-center gap-3 sm:justify-start'>
+              {liandongProducts.map((product) => (
+                <LiandongProductCard
+                  key={product.id}
+                  product={product}
+                  onSelect={(selected) => {
+                    setSelectedLiandongProduct(selected)
+                    setLiandongAttemptId((current) => current + 1)
+                    setLiandongPaymentOpen(true)
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* My subscriptions & billing preference */}
         <div className='rounded-xl border p-3 sm:p-4'>
           <div className='flex flex-wrap items-center justify-between gap-2.5 sm:gap-3'>
@@ -522,7 +554,7 @@ export function SubscriptionPlansCard({
         </div>
 
         {/* Available plans grid */}
-        {plans.length > 0 ? (
+        {!liandongEnabled && plans.length > 0 && (
           <div className='grid grid-cols-1 gap-3 2xl:grid-cols-2 2xl:gap-4'>
             {plans.map((p, index) => {
               const plan = p?.plan
@@ -626,39 +658,58 @@ export function SubscriptionPlansCard({
               )
             })}
           </div>
-        ) : (
+        )}
+        {!liandongEnabled && plans.length === 0 && (
           <p className='text-muted-foreground py-4 text-center text-sm'>
             {t('No plans available')}
           </p>
         )}
       </TitledCard>
 
-      <SubscriptionPurchaseDialog
-        open={purchaseOpen}
+      {!liandongEnabled && (
+        <SubscriptionPurchaseDialog
+          open={purchaseOpen}
+          onOpenChange={(open) => {
+            setPurchaseOpen(open)
+            if (!open) {
+              fetchSelfSubscription()
+            }
+          }}
+          plan={selectedPlan}
+          enableStripe={enableStripe}
+          enableCreem={enableCreem}
+          enableWaffoPancake={enableWaffoPancake}
+          enableOnlineTopUp={enableOnlineTopUp}
+          epayMethods={epayMethods}
+          userQuota={props.userQuota}
+          onPurchaseSuccess={props.onPurchaseSuccess}
+          purchaseLimit={
+            selectedPlan?.plan?.max_purchase_per_user
+              ? Number(selectedPlan.plan.max_purchase_per_user)
+              : undefined
+          }
+          purchaseCount={
+            selectedPlan?.plan?.id
+              ? planPurchaseCountMap.get(selectedPlan.plan.id)
+              : undefined
+          }
+        />
+      )}
+
+      <LiandongPaymentDialog
+        open={liandongPaymentOpen}
         onOpenChange={(open) => {
-          setPurchaseOpen(open)
+          setLiandongPaymentOpen(open)
           if (!open) {
-            fetchSelfSubscription()
+            void fetchSelfSubscription()
           }
         }}
-        plan={selectedPlan}
-        enableStripe={enableStripe}
-        enableCreem={enableCreem}
-        enableWaffoPancake={enableWaffoPancake}
-        enableOnlineTopUp={enableOnlineTopUp}
-        epayMethods={epayMethods}
-        userQuota={userQuota}
-        onPurchaseSuccess={onPurchaseSuccess}
-        purchaseLimit={
-          selectedPlan?.plan?.max_purchase_per_user
-            ? Number(selectedPlan.plan.max_purchase_per_user)
-            : undefined
-        }
-        purchaseCount={
-          selectedPlan?.plan?.id
-            ? planPurchaseCountMap.get(selectedPlan.plan.id)
-            : undefined
-        }
+        product={selectedLiandongProduct}
+        attemptId={liandongAttemptId}
+        onPaymentSuccess={async () => {
+          await fetchSelfSubscription()
+          await props.onPurchaseSuccess?.()
+        }}
       />
     </>
   )

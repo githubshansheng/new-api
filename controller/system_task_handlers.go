@@ -22,6 +22,7 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(liandongPollHandler{})
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and
@@ -149,6 +150,44 @@ func (asyncTaskPollHandler) NewPayload() any { return nil }
 
 func (asyncTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := service.RunTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+type liandongPollHandler struct{}
+
+func (liandongPollHandler) Type() string { return model.SystemTaskTypeLiandongPoll }
+
+func (liandongPollHandler) Enabled() bool {
+	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
+	if err != nil {
+		return false
+	}
+	if !settingsSnapshot.Enabled {
+		return false
+	}
+	return model.HasLiandongWork(
+		settingsSnapshot.ReconcileEnabled,
+		settingsSnapshot.FulfillEnabled,
+		settingsSnapshot.ReconcileEnabled,
+	)
+}
+
+func (liandongPollHandler) Interval() time.Duration {
+	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
+	if err != nil {
+		return 30 * time.Second
+	}
+	return time.Duration(settingsSnapshot.PollIntervalSeconds) * time.Second
+}
+
+func (liandongPollHandler) NewPayload() any { return nil }
+
+func (liandongPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	summary, err := service.RunLiandongReconcileOnce(ctx)
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, err)
+		return
+	}
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 

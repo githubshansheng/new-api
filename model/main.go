@@ -257,6 +257,9 @@ func migrateDB() error {
 	if err := migrateTokenModelLimitsToText(); err != nil {
 		return err
 	}
+	if err := prepareLiandongMigrations(DB); err != nil {
+		return err
+	}
 
 	err := DB.AutoMigrate(
 		&Channel{},
@@ -292,6 +295,11 @@ func migrateDB() error {
 		&SystemTaskLock{},
 		&CasbinRule{},
 		&AuthzRole{},
+		&LiandongProduct{},
+		&LiandongProductThumbnail{},
+		&LiandongProductInventoryCode{},
+		&LiandongOrder{},
+		&LiandongUserOperationLease{},
 	)
 	if err != nil {
 		return err
@@ -300,6 +308,9 @@ func migrateDB() error {
 		return err
 	}
 	if err := InitializeExternalIdentityClaims(); err != nil {
+		return err
+	}
+	if err := normalizeLiandongMigrationColumns(DB); err != nil {
 		return err
 	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
@@ -315,6 +326,9 @@ func migrateDB() error {
 }
 
 func migrateDBFast() error {
+	if err := prepareLiandongMigrations(DB); err != nil {
+		return err
+	}
 
 	var wg sync.WaitGroup
 
@@ -353,6 +367,11 @@ func migrateDBFast() error {
 		{&SystemInstance{}, "SystemInstance"},
 		{&SystemTask{}, "SystemTask"},
 		{&SystemTaskLock{}, "SystemTaskLock"},
+		{&LiandongProduct{}, "LiandongProduct"},
+		{&LiandongProductThumbnail{}, "LiandongProductThumbnail"},
+		{&LiandongProductInventoryCode{}, "LiandongProductInventoryCode"},
+		{&LiandongOrder{}, "LiandongOrder"},
+		{&LiandongUserOperationLease{}, "LiandongUserOperationLease"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))
@@ -383,6 +402,9 @@ func migrateDBFast() error {
 	if err := InitializeExternalIdentityClaims(); err != nil {
 		return err
 	}
+	if err := normalizeLiandongMigrationColumns(DB); err != nil {
+		return err
+	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
 		if err := ensureSubscriptionPlanTableSQLite(); err != nil {
 			return err
@@ -401,6 +423,93 @@ func migrateLOGDB() error {
 		return migrateClickHouseLogDB()
 	}
 	return LOG_DB.AutoMigrate(&Log{})
+}
+
+type liandongProductMigrationColumns struct {
+	GoodsType         *string `gorm:"type:varchar(32)"`
+	InventoryMode     *string `gorm:"type:varchar(32)"`
+	InventoryCapacity *int
+	ThumbnailVersion  *int64 `gorm:"type:bigint"`
+}
+
+func (liandongProductMigrationColumns) TableName() string {
+	return "liandong_products"
+}
+
+type liandongOrderMigrationColumns struct {
+	InventoryCodeID *int
+	ExpiresAt       *int64  `gorm:"type:bigint"`
+	ClosedReason    *string `gorm:"type:varchar(64)"`
+	LatePayment     *bool
+}
+
+func (liandongOrderMigrationColumns) TableName() string {
+	return "liandong_orders"
+}
+
+func prepareLiandongMigrations(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	columns := []struct {
+		model    any
+		addModel any
+		field    string
+	}{
+		{&LiandongProduct{}, &liandongProductMigrationColumns{}, "GoodsType"},
+		{&LiandongProduct{}, &liandongProductMigrationColumns{}, "InventoryMode"},
+		{&LiandongProduct{}, &liandongProductMigrationColumns{}, "InventoryCapacity"},
+		{&LiandongProduct{}, &liandongProductMigrationColumns{}, "ThumbnailVersion"},
+		{&LiandongOrder{}, &liandongOrderMigrationColumns{}, "InventoryCodeID"},
+		{&LiandongOrder{}, &liandongOrderMigrationColumns{}, "ExpiresAt"},
+		{&LiandongOrder{}, &liandongOrderMigrationColumns{}, "ClosedReason"},
+		{&LiandongOrder{}, &liandongOrderMigrationColumns{}, "LatePayment"},
+	}
+	for _, column := range columns {
+		if !db.Migrator().HasTable(column.model) ||
+			db.Migrator().HasColumn(column.model, column.field) {
+			continue
+		}
+		if err := db.Migrator().AddColumn(column.addModel, column.field); err != nil {
+			return fmt.Errorf("failed to add Liandong column %s: %w", column.field, err)
+		}
+	}
+	return normalizeLiandongMigrationColumns(db)
+}
+
+func normalizeLiandongMigrationColumns(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	updates := []struct {
+		model          any
+		column         string
+		value          any
+		normalizeEmpty bool
+	}{
+		{&LiandongProduct{}, "goods_type", "card", true},
+		{&LiandongProduct{}, "inventory_mode", LiandongInventoryModeUnlimited, true},
+		{&LiandongProduct{}, "inventory_capacity", 0, false},
+		{&LiandongProduct{}, "thumbnail_version", int64(0), false},
+		{&LiandongOrder{}, "inventory_code_id", 0, false},
+		{&LiandongOrder{}, "expires_at", int64(0), false},
+		{&LiandongOrder{}, "closed_reason", "", false},
+		{&LiandongOrder{}, "late_payment", false, false},
+	}
+	for _, update := range updates {
+		if !db.Migrator().HasTable(update.model) ||
+			!db.Migrator().HasColumn(update.model, update.column) {
+			continue
+		}
+		query := db.Model(update.model).Where(update.column + " IS NULL")
+		if update.normalizeEmpty {
+			query = query.Or(update.column+" = ?", "")
+		}
+		if err := query.Update(update.column, update.value).Error; err != nil {
+			return fmt.Errorf("failed to normalize Liandong column %s: %w", update.column, err)
+		}
+	}
+	return nil
 }
 
 func migrateClickHouseLogDB() error {

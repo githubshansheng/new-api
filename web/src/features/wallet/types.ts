@@ -60,6 +60,58 @@ export type WaffoPancakePaymentResponse = ApiResponse<
   | string
 >
 
+export type LiandongBusinessType = 'quota' | 'subscription'
+export type LiandongInventoryLevel =
+  | 'unlimited'
+  | 'sufficient'
+  | 'normal'
+  | 'low'
+  | 'out_of_stock'
+
+export interface LiandongSubscriptionSpec {
+  title: string
+  duration_unit: string
+  duration_value: number
+  custom_seconds: number
+  total_amount: number
+  quota_reset_period: string
+  quota_reset_custom_seconds: number
+  upgrade_group: string
+}
+
+export interface LiandongProduct {
+  id: number
+  business_type: LiandongBusinessType
+  name: string
+  quota_amount: number
+  plan_id: number
+  expected_amount_minor: number
+  currency: string
+  thumbnail_url?: string
+  thumbnail_version?: number
+  inventory_level: LiandongInventoryLevel
+  subscription?: LiandongSubscriptionSpec
+}
+
+export interface LiandongPaymentView {
+  local_trade_no: string
+  product_name: string
+  business_type: LiandongBusinessType
+  payment_status: string
+  fulfillment_status: string
+  payment_url?: string
+  iframe_allowed: boolean
+  client_poll_interval_seconds: number
+  created_at: number
+  paid_at?: number
+  fulfilled_at?: number
+  expires_at?: number
+  late_payment?: boolean
+}
+
+export type LiandongProductsResponse = ApiResponse<LiandongProduct[]>
+export type LiandongPaymentResponse = ApiResponse<LiandongPaymentView>
+
 /**
  * Creem product configuration
  */
@@ -122,6 +174,8 @@ export interface WaffoPayMethod {
 export interface TopupInfo {
   /** Whether online topup is enabled */
   enable_online_topup: boolean
+  /** Whether Liandong payment products are enabled */
+  enable_liandong_topup?: boolean
   /** Whether Stripe topup is enabled */
   enable_stripe_topup: boolean
   /** Available payment methods */

@@ -23,6 +23,13 @@ import (
 
 func GetTopUpInfo(c *gin.Context) {
 	complianceConfirmed := operation_setting.IsPaymentComplianceConfirmed()
+	enableLiandong := false
+	liandongSettings, err := model.GetLiandongPaymentSettingsFromDB()
+	if err != nil {
+		logger.LogWarn(c.Request.Context(), "failed to read Liandong payment availability")
+	} else {
+		enableLiandong = liandongSettings.Enabled
+	}
 
 	// 获取支付方式
 	payMethods := operation_setting.PayMethods
@@ -101,6 +108,7 @@ func GetTopUpInfo(c *gin.Context) {
 		"enable_creem_topup":               isCreemTopUpEnabled(),
 		"enable_waffo_topup":               enableWaffo,
 		"enable_waffo_pancake_topup":       enableWaffoPancake,
+		"enable_liandong_topup":            enableLiandong,
 		"enable_redemption":                complianceConfirmed,
 		"payment_compliance_confirmed":     complianceConfirmed,
 		"payment_compliance_terms_version": operation_setting.CurrentComplianceTermsVersion,

@@ -34,6 +34,10 @@ func isPaymentComplianceOptionKey(key string) bool {
 	return strings.HasPrefix(key, "payment_setting.compliance_")
 }
 
+func isLiandongOptionKey(key string) bool {
+	return strings.HasPrefix(key, "Liandong")
+}
+
 func isPositiveOptionValue(value string) bool {
 	intValue, err := strconv.Atoi(strings.TrimSpace(value))
 	if err == nil {
@@ -81,7 +85,7 @@ func GetOptions(c *gin.Context) {
 	optionValues := make(map[string]string)
 	common.OptionMapRWMutex.Lock()
 	for k, v := range common.OptionMap {
-		if k == "theme.frontend" {
+		if k == "theme.frontend" || isLiandongOptionKey(k) {
 			continue
 		}
 		value := common.Interface2String(v)
@@ -148,6 +152,10 @@ func UpdateOption(c *gin.Context) {
 			return
 		}
 	default:
+		if isLiandongOptionKey(option.Key) {
+			common.ApiErrorMsg(c, "链动卡网配置只能通过专用 Root 接口修改")
+			return
+		}
 		if isPaymentComplianceOptionKey(option.Key) {
 			common.ApiErrorMsg(c, "合规确认字段不允许通过通用设置接口修改")
 			return

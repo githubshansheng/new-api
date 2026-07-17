@@ -1,0 +1,11 @@
+# Files that are required to reproduce the production binaries even though
+# broader dependency-manifest exclusions exist.
+web/classic/package.json
+web/bun.lock
+
+# Linux service management is part of this production Patch.
+new-api.sh
+
+# README source-build instructions reference the Windows service wrappers.
+new-api.cmd
+new-api.ps1

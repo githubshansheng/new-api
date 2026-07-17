@@ -24,6 +24,10 @@ tiktoken_cache
 .gomodcache/
 .cache
 .plans
+.tmp/
+.pnpm-store/
+.run/
+plans
 .claude
 .cursor
 
@@ -38,9 +42,16 @@ token_estimator_test.go
 skills-lock.json
 .playwright-mcp
 
+# Generated patch release bundles and Python bytecode.
+patch/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
+__pycache__/
+*.py[cod]
+
 # Local-only live probes and scratch test workspaces.
 .local-tests/
 relaykit/relayconvert/chat_responses_live_local_test.go
+docs/MyResearch/
+service/relayconvert/chat_responses_live_local_test.go
 service/openaicompat/chat_responses_live_local_test.go
 go.work
 go.work.sum

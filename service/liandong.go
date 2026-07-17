@@ -522,13 +522,45 @@ func (c *liandongClient) doJSON(
 	if len(responseBody) > liandongMaxBodyBytes {
 		return resp.StatusCode, nil, errors.New("provider response is too large")
 	}
-	return resp.StatusCode, responseBody, nil
+	return resp.StatusCode, normalizeLiandongJSONBody(responseBody), nil
+}
+
+func normalizeLiandongJSONBody(body []byte) []byte {
+	normalized := bytes.TrimSpace(body)
+	normalized = bytes.TrimPrefix(normalized, []byte{0xef, 0xbb, 0xbf})
+	return bytes.TrimSpace(normalized)
+}
+
+func invalidLiandongJSONResponse(kind string, body []byte) error {
+	normalized := normalizeLiandongJSONBody(body)
+	format := "malformed JSON"
+	switch {
+	case len(normalized) == 0:
+		format = "empty body"
+	case normalized[0] == '<':
+		format = "received HTML instead of JSON"
+	case len(normalized) >= 2 && normalized[0] == 0x1f && normalized[1] == 0x8b:
+		format = "received compressed bytes instead of decoded JSON"
+	case len(normalized) >= 2 &&
+		((normalized[0] == 0xff && normalized[1] == 0xfe) ||
+			(normalized[0] == 0xfe && normalized[1] == 0xff)):
+		format = "received unsupported UTF-16 JSON"
+	case normalized[0] != '{' && normalized[0] != '[':
+		format = "unexpected response format"
+	}
+	return fmt.Errorf(
+		"provider %s response is invalid (%s; %d bytes)",
+		kind,
+		format,
+		len(body),
+	)
 }
 
 func parseLiandongCreateTradeNo(body []byte) (string, error) {
 	var payload liandongCreateResponse
+	body = normalizeLiandongJSONBody(body)
 	if err := common.Unmarshal(body, &payload); err != nil {
-		return "", errors.New("provider create response is invalid")
+		return "", invalidLiandongJSONResponse("create", body)
 	}
 	tradeNo := strings.TrimSpace(payload.TradeNo)
 	if tradeNo == "" {
@@ -689,8 +721,9 @@ func parseLiandongOrderVerification(body []byte, expectedTradeNo string) (*liand
 
 func parseLiandongOrderRecords(body []byte) ([]liandongOrderRecord, error) {
 	var payload liandongOrderListResponse
+	body = normalizeLiandongJSONBody(body)
 	if err := common.Unmarshal(body, &payload); err != nil {
-		return nil, errors.New("provider order response is invalid")
+		return nil, invalidLiandongJSONResponse("order", body)
 	}
 	if liandongRawCodeEquals(payload.Code, 0) {
 		message := strings.TrimSpace(payload.Message)
@@ -759,8 +792,9 @@ func liandongUnauthorizedResponse(statusCode int, body []byte) bool {
 
 func parseLiandongLoginToken(body []byte) (string, error) {
 	var payload liandongLoginResponse
+	body = normalizeLiandongJSONBody(body)
 	if err := common.Unmarshal(body, &payload); err != nil {
-		return "", errors.New("liandong login response is invalid")
+		return "", invalidLiandongJSONResponse("login", body)
 	}
 	if liandongRawCodeEquals(payload.Code, http.StatusUnauthorized) {
 		return "", errors.New("liandong login was rejected")
@@ -828,7 +862,7 @@ func ListLiandongProviderGoods(
 		return nil, err
 	}
 	client := newLiandongClient()
-	statusCode, responseBody, _, err := client.doAuthenticatedJSON(
+	statusCode, responseBody, tokenUsed, err := client.doAuthenticatedJSON(
 		ctx,
 		liandongGoodsListPath,
 		body,
@@ -838,15 +872,43 @@ func ListLiandongProviderGoods(
 		return nil, err
 	}
 	if statusCode < 200 || statusCode >= 300 {
-		return nil, fmt.Errorf("provider returned HTTP %d", statusCode)
+		return nil, fmt.Errorf(
+			"provider returned HTTP %d: %s",
+			statusCode,
+			liandongProviderResponseDiagnostic(
+				responseBody,
+				settingsSnapshot.JUUID,
+				settingsSnapshot.Username,
+				settingsSnapshot.Password,
+				settingsSnapshot.MerchantToken,
+				tokenUsed,
+			),
+		)
 	}
-	return parseLiandongGoods(responseBody)
+	goods, err := parseLiandongGoods(responseBody)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"%w; upstream HTTP %d response: %s",
+			err,
+			statusCode,
+			liandongProviderResponseDiagnostic(
+				responseBody,
+				settingsSnapshot.JUUID,
+				settingsSnapshot.Username,
+				settingsSnapshot.Password,
+				settingsSnapshot.MerchantToken,
+				tokenUsed,
+			),
+		)
+	}
+	return goods, nil
 }
 
 func parseLiandongGoods(body []byte) ([]LiandongProviderGoods, error) {
 	var payload liandongGoodsListResponse
+	body = normalizeLiandongJSONBody(body)
 	if err := common.Unmarshal(body, &payload); err != nil {
-		return nil, errors.New("provider goods response is invalid")
+		return nil, invalidLiandongJSONResponse("goods", body)
 	}
 	if liandongRawCodeEquals(payload.Code, 0) {
 		return nil, errors.New("provider rejected goods query")
@@ -984,6 +1046,17 @@ func sanitizeLiandongDiagnostic(message string, secrets ...string) string {
 		sanitized = string(messageRunes[:liandongMaxDiagnosticRunes])
 	}
 	return sanitized
+}
+
+func liandongProviderResponseDiagnostic(body []byte, secrets ...string) string {
+	diagnostic := sanitizeLiandongDiagnostic(
+		string(normalizeLiandongJSONBody(body)),
+		secrets...,
+	)
+	if diagnostic == "" {
+		return "<empty>"
+	}
+	return diagnostic
 }
 
 func SanitizeLiandongOrderDiagnostic(

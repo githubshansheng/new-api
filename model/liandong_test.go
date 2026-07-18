@@ -1511,7 +1511,7 @@ func TestUpdateOptionMapDoesNotCacheLiandongMerchantToken(t *testing.T) {
 	assert.False(t, cached)
 }
 
-func TestUpdateOptionsBulkDoesNotLogLiandongMerchantToken(t *testing.T) {
+func TestUpdateOptionsBulkDoesNotLogLiandongSecrets(t *testing.T) {
 	require.NoError(t, DB.AutoMigrate(&Option{}))
 
 	originalDB := DB
@@ -1521,20 +1521,24 @@ func TestUpdateOptionsBulkDoesNotLogLiandongMerchantToken(t *testing.T) {
 		DB = originalDB
 		originalDB.Where("key IN ?", []string{
 			"LiandongMerchantToken",
+			"LiandongProxyPassword",
 			"LiandongPollIntervalSeconds",
 		}).Delete(&Option{})
 	})
 
 	secret := "merchant-token-must-not-appear"
+	proxySecret := "proxy-password-must-not-appear"
 	visibleValue := "visible-poll-value"
 	require.NoError(t, UpdateOptionsBulk(map[string]string{
 		"LiandongMerchantToken":       secret,
+		"LiandongProxyPassword":       proxySecret,
 		"LiandongPollIntervalSeconds": visibleValue,
 	}))
 
 	loggedStatements := recorder.statements.String()
 	assert.Contains(t, loggedStatements, visibleValue)
 	assert.NotContains(t, loggedStatements, secret)
+	assert.NotContains(t, loggedStatements, proxySecret)
 }
 
 func TestDisableLiandongInventoryRejectsOversizedBatchWithoutMutation(t *testing.T) {

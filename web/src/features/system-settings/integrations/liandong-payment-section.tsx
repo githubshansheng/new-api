@@ -121,8 +121,6 @@ const defaultSettings: LiandongSettings = {
   base_url: 'https://pay.ldxp.cn',
   proxy_enabled: false,
   proxy_url: '',
-  proxy_username_configured: false,
-  proxy_password_configured: false,
   poll_interval_seconds: 30,
   client_poll_interval_seconds: 5,
   reconcile_batch_size: 50,
@@ -218,13 +216,9 @@ export function LiandongPaymentSection() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [merchantToken, setMerchantToken] = useState('')
-  const [proxyUsername, setProxyUsername] = useState('')
-  const [proxyPassword, setProxyPassword] = useState('')
   const [clearUsername, setClearUsername] = useState(false)
   const [clearPassword, setClearPassword] = useState(false)
   const [clearToken, setClearToken] = useState(false)
-  const [clearProxyUsername, setClearProxyUsername] = useState(false)
-  const [clearProxyPassword, setClearProxyPassword] = useState(false)
   const [loading, setLoading] = useState(true)
   const [savingSettings, setSavingSettings] = useState(false)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
@@ -383,10 +377,6 @@ export function LiandongPaymentSection() {
         clear_username: clearUsername,
         clear_password: clearPassword,
         clear_token: clearToken,
-        proxy_username: proxyUsername.trim() || undefined,
-        proxy_password: proxyPassword || undefined,
-        clear_proxy_username: clearProxyUsername,
-        clear_proxy_password: clearProxyPassword,
       })
       if (!response.success) {
         toast.error(
@@ -398,13 +388,9 @@ export function LiandongPaymentSection() {
       setUsername('')
       setPassword('')
       setMerchantToken('')
-      setProxyUsername('')
-      setProxyPassword('')
       setClearUsername(false)
       setClearPassword(false)
       setClearToken(false)
-      setClearProxyUsername(false)
-      setClearProxyPassword(false)
       await loadSettings()
     } catch {
       toast.error(t('Update failed'))
@@ -893,102 +879,28 @@ export function LiandongPaymentSection() {
           </div>
 
           {settings.proxy_enabled && (
-            <>
-              <div className='grid gap-1.5 sm:col-span-2'>
-                <Label htmlFor='liandong-proxy-url'>
-                  {t('SOCKS5 proxy URL')}
-                </Label>
-                <Input
-                  id='liandong-proxy-url'
-                  value={settings.proxy_url}
-                  maxLength={2048}
-                  placeholder='socks5://127.0.0.1:10808:username:password'
-                  onChange={(event) =>
-                    setSettings((current) => ({
-                      ...current,
-                      proxy_url: event.target.value,
-                    }))
-                  }
-                />
-                <p className='text-muted-foreground text-xs'>
-                  {t(
-                    'Supports socks5://host:port, socks5://host:port:username:password, username:password:host:port, username:password@host:port, and host:port@username:password. Put credentials in the URL or configure them separately, not both.'
-                  )}
-                </p>
-              </div>
-              <div className='grid gap-1.5'>
-                <Label htmlFor='liandong-proxy-username'>
-                  {t('SOCKS5 proxy account')}
-                </Label>
-                <Input
-                  id='liandong-proxy-username'
-                  value={proxyUsername}
-                  maxLength={128}
-                  disabled={clearProxyUsername}
-                  placeholder={
-                    settings.proxy_username_configured
-                      ? t('Configured; enter a new value to replace it')
-                      : t('Optional')
-                  }
-                  onChange={(event) => setProxyUsername(event.target.value)}
-                  autoComplete='off'
-                />
-                <div className='flex items-center gap-2'>
-                  <Checkbox
-                    id='liandong-clear-proxy-username'
-                    checked={clearProxyUsername}
-                    onCheckedChange={(checked) =>
-                      setClearProxyUsername(checked === true)
-                    }
-                  />
-                  <Label
-                    htmlFor='liandong-clear-proxy-username'
-                    className='text-xs'
-                  >
-                    {t('Clear stored SOCKS5 proxy account')}
-                  </Label>
-                </div>
-              </div>
-              <div className='grid gap-1.5'>
-                <Label htmlFor='liandong-proxy-password'>
-                  {t('SOCKS5 proxy password')}
-                </Label>
-                <Input
-                  id='liandong-proxy-password'
-                  type='password'
-                  value={proxyPassword}
-                  maxLength={256}
-                  disabled={clearProxyPassword}
-                  placeholder={
-                    settings.proxy_password_configured
-                      ? t('Configured; enter a new value to replace it')
-                      : t('Optional')
-                  }
-                  onChange={(event) => setProxyPassword(event.target.value)}
-                  autoComplete='new-password'
-                />
-                <div className='flex items-center gap-2'>
-                  <Checkbox
-                    id='liandong-clear-proxy-password'
-                    checked={clearProxyPassword}
-                    onCheckedChange={(checked) =>
-                      setClearProxyPassword(checked === true)
-                    }
-                  />
-                  <Label
-                    htmlFor='liandong-clear-proxy-password'
-                    className='text-xs'
-                  >
-                    {t('Clear stored SOCKS5 proxy password')}
-                  </Label>
-                </div>
-              </div>
-              <p className='text-muted-foreground text-xs sm:col-span-2'>
+            <div className='grid gap-1.5 sm:col-span-2'>
+              <Label htmlFor='liandong-proxy-url'>
+                {t('SOCKS5 proxy URL')}
+              </Label>
+              <Input
+                id='liandong-proxy-url'
+                value={settings.proxy_url}
+                maxLength={2048}
+                placeholder='socks5://127.0.0.1:10808:username:password'
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    proxy_url: event.target.value,
+                  }))
+                }
+              />
+              <p className='text-muted-foreground text-xs'>
                 {t(
-                  'SOCKS5 proxy credentials are write-only and are used only by the backend card marketplace client.'
+                  'Supports socks5://host:port, socks5://host:port:username:password, username:password:host:port, username:password@host:port, and host:port@username:password. Proxy credentials must be included in this field.'
                 )}
               </p>
-            </>
+            </div>
           )}
 
           <div className='grid gap-1.5'>

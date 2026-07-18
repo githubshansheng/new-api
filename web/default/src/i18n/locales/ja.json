@@ -4521,6 +4521,7 @@
     "Supports HTML markup or iframe embedding. Enter HTML code directly, or provide a complete URL to automatically embed it as an iframe.": "HTMLマークアップまたはiframe埋め込みをサポートします。HTMLコードを直接入力するか、完全なURLを提供してiframeとして自動的に埋め込みます。",
     "Supports one-click configuration and perfectly adapts to NewAPI multi-protocol configuration.": "ワンクリック設定をサポートし、NewAPIマルチプロトコル設定に完全に適応します。",
     "Supports PNG, JPG, SVG, or WebP. Recommended size: 128×128 or smaller.": "PNG、JPG、SVG、WebPに対応。推奨サイズ: 128×128以下。",
+    "Supports socks5://host:port, socks5://host:port:username:password, username:password:host:port, username:password@host:port, and host:port@username:password. Proxy credentials must be included in this field.": "socks5://host:port、socks5://host:port:username:password、username:password:host:port、username:password@host:port、host:port@username:password に対応しています。プロキシの認証情報はこの項目に直接入力してください。",
     "Supports socks5://host:port, socks5://host:port:username:password, username:password:host:port, username:password@host:port, and host:port@username:password. Put credentials in the URL or configure them separately, not both.": "socks5://host:port、socks5://host:port:username:password、username:password:host:port、username:password@host:port、host:port@username:password に対応しています。認証情報は URL または個別の項目のどちらか一方に入力してください。",
     "Surprise me": "おまかせ",
     "Sustained tokens per second": "持続的な毎秒トークン数",

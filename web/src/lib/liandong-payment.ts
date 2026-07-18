@@ -72,10 +72,16 @@ export function localizeLiandongMessage(
     return t('Failed to create payment order')
   }
 
-  const proxyConnectionErrorPrefix = 'SOCKS5 proxy connection failed:'
-  if (normalized.startsWith(proxyConnectionErrorPrefix)) {
+  const proxyConnectionErrorPrefixes = [
+    'Proxy connection failed:',
+    'SOCKS5 proxy connection failed:',
+  ]
+  const proxyConnectionErrorPrefix = proxyConnectionErrorPrefixes.find(
+    (prefix) => normalized.startsWith(prefix)
+  )
+  if (proxyConnectionErrorPrefix) {
     const detail = normalized.slice(proxyConnectionErrorPrefix.length).trim()
-    return `${t('SOCKS5 proxy connection failed')}${detail ? `: ${detail}` : ''}`
+    return `${t('Proxy connection failed')}${detail ? `: ${detail}` : ''}`
   }
 
   const messageKey = liandongMessageAliases[normalized] || normalized

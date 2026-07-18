@@ -154,13 +154,14 @@ func TestGetLiandongOrderOmitsSensitivePaymentConfiguration(t *testing.T) {
 func TestGetLiandongSettingsNeverReturnsMerchantToken(t *testing.T) {
 	setupLiandongControllerTestDB(t)
 	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
-		"LiandongMerchantToken": "super-secret-token",
-		"LiandongJUUID":         "merchant-id",
-		"LiandongBaseURL":       "https://gateway.example.com/card",
-		"LiandongProxyEnabled":  "true",
-		"LiandongProxyURL":      "socks5h://127.0.0.1:1080",
-		"LiandongProxyUsername": "secret-proxy-user",
-		"LiandongProxyPassword": "secret-proxy-password",
+		"LiandongMerchantToken":       "super-secret-token",
+		"LiandongJUUID":               "merchant-id",
+		"LiandongBaseURL":             "https://gateway.example.com/card",
+		"LiandongProxyEnabled":        "true",
+		"LiandongProxyURL":            "socks5h://127.0.0.1:1080",
+		"LiandongProxyUsername":       "secret-proxy-user",
+		"LiandongProxyPassword":       "secret-proxy-password",
+		"LiandongProxyTimeoutSeconds": "75",
 	}))
 
 	recorder := httptest.NewRecorder()
@@ -171,14 +172,17 @@ func TestGetLiandongSettingsNeverReturnsMerchantToken(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.NotContains(t, recorder.Body.String(), "super-secret-token")
-	assert.NotContains(t, recorder.Body.String(), "secret-proxy-user")
-	assert.NotContains(t, recorder.Body.String(), "secret-proxy-password")
 	assert.Contains(t, recorder.Body.String(), `"merchant_token_configured":true`)
 	assert.Contains(t, recorder.Body.String(), `"base_url":"https://gateway.example.com/card"`)
 	assert.Contains(t, recorder.Body.String(), `"proxy_enabled":true`)
-	assert.Contains(t, recorder.Body.String(), `"proxy_url":"socks5h://127.0.0.1:1080"`)
+	assert.Contains(
+		t,
+		recorder.Body.String(),
+		`"proxy_url":"socks5h://secret-proxy-user:secret-proxy-password@127.0.0.1:1080"`,
+	)
 	assert.Contains(t, recorder.Body.String(), `"proxy_username_configured":true`)
 	assert.Contains(t, recorder.Body.String(), `"proxy_password_configured":true`)
+	assert.Contains(t, recorder.Body.String(), `"proxy_timeout_seconds":75`)
 }
 
 func TestGetTopUpInfoReportsLiandongMasterSwitch(t *testing.T) {
@@ -401,6 +405,26 @@ func TestUpdateLiandongSettingsStoresIndependentPollingIntervals(t *testing.T) {
 	assert.Equal(t, 1, settingsSnapshot.PollIntervalSeconds)
 	assert.Equal(t, 7, settingsSnapshot.ClientPollIntervalSeconds)
 	assert.NotContains(t, recorder.Body.String(), "merchant_token")
+}
+
+func TestUpdateLiandongSettingsStoresProxyTimeout(t *testing.T) {
+	setupLiandongControllerTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(
+		http.MethodPut,
+		"/api/option/liandong",
+		strings.NewReader(`{"proxy_timeout_seconds":90}`),
+	)
+	context.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateLiandongSettings(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
+	require.NoError(t, err)
+	assert.Equal(t, 90, settingsSnapshot.ProxyTimeoutSeconds)
 }
 
 func TestUpdateLiandongSettingsStoresBaseURLAndHTTPProxy(t *testing.T) {

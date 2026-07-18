@@ -28,19 +28,22 @@ import (
 )
 
 const (
-	liandongBaseURL            = setting.DefaultLiandongBaseURL
-	liandongCreatePath         = "/shopApi/Pay/order"
-	liandongPaymentPath        = "/shopApi/Pay/payment"
-	liandongOrderListPath      = "/merchantApi/order/list"
-	liandongGoodsListPath      = "/merchantApi/Goods/list"
-	liandongLoginPath          = "/merchantApi/user/login"
-	liandongMaxBodyBytes       = 1 << 20
-	liandongRequestTimeout     = 12 * time.Second
-	liandongMaxDiagnosticRunes = 256
-	liandongReconcileBatchSize = 100
-	liandongOperationLeaseTTL  = 90 * time.Second
-	liandongOperationWait      = 15 * time.Second
-	liandongOperationRetry     = 100 * time.Millisecond
+	liandongBaseURL               = setting.DefaultLiandongBaseURL
+	liandongCreatePath            = "/shopApi/Pay/order"
+	liandongPaymentPath           = "/shopApi/Pay/payment"
+	liandongOrderListPath         = "/merchantApi/order/list"
+	liandongGoodsListPath         = "/merchantApi/Goods/list"
+	liandongLoginPath             = "/merchantApi/user/login"
+	liandongMaxBodyBytes          = 1 << 20
+	liandongDialTimeout           = 10 * time.Second
+	liandongTLSHandshakeTimeout   = 15 * time.Second
+	liandongResponseHeaderTimeout = 20 * time.Second
+	liandongRequestTimeout        = 30 * time.Second
+	liandongMaxDiagnosticRunes    = 256
+	liandongReconcileBatchSize    = 100
+	liandongOperationLeaseTTL     = 90 * time.Second
+	liandongOperationWait         = 15 * time.Second
+	liandongOperationRetry        = 100 * time.Millisecond
 )
 
 var liandongTradeNoPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{6,128}$`)
@@ -217,7 +220,22 @@ func newLiandongClientWithSettings(
 	baseURL, configErr := setting.NormalizeLiandongBaseURL(settingsSnapshot.BaseURL)
 	proxyFunc := http.ProxyFromEnvironment
 	var dialContext func(context.Context, string, string) (net.Conn, error)
+	dialTimeout := liandongDialTimeout
+	tlsHandshakeTimeout := liandongTLSHandshakeTimeout
+	responseHeaderTimeout := liandongResponseHeaderTimeout
+	requestTimeout := liandongRequestTimeout
 	if settingsSnapshot.ProxyEnabled {
+		proxyTimeoutSeconds := settingsSnapshot.ProxyTimeoutSeconds
+		if proxyTimeoutSeconds < setting.MinLiandongProxyTimeoutSeconds ||
+			proxyTimeoutSeconds > setting.MaxLiandongProxyTimeoutSeconds {
+			proxyTimeoutSeconds = setting.DefaultLiandongProxyTimeoutSeconds
+		}
+		proxyTimeout := time.Duration(proxyTimeoutSeconds) * time.Second
+		dialTimeout = proxyTimeout
+		tlsHandshakeTimeout = proxyTimeout
+		responseHeaderTimeout = proxyTimeout
+		requestTimeout = proxyTimeout
+
 		configuredProxyFunc, proxyDialContext, proxyConfigErr := liandongProxyTransport(
 			settingsSnapshot,
 		)
@@ -240,7 +258,7 @@ func newLiandongClientWithSettings(
 		configErr = err
 	}
 	dialer := &net.Dialer{
-		Timeout:   4 * time.Second,
+		Timeout:   dialTimeout,
 		KeepAlive: 30 * time.Second,
 	}
 	transport := &http.Transport{
@@ -250,8 +268,8 @@ func newLiandongClientWithSettings(
 		MaxIdleConns:          20,
 		MaxIdleConnsPerHost:   5,
 		IdleConnTimeout:       60 * time.Second,
-		TLSHandshakeTimeout:   4 * time.Second,
-		ResponseHeaderTimeout: 8 * time.Second,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
@@ -262,7 +280,7 @@ func newLiandongClientWithSettings(
 	return &liandongClient{
 		httpClient: &http.Client{
 			Transport: transport,
-			Timeout:   liandongRequestTimeout,
+			Timeout:   requestTimeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 3 {
 					return errors.New("too many redirects")
@@ -738,6 +756,8 @@ func invalidLiandongJSONResponse(kind string, body []byte) error {
 	switch {
 	case len(normalized) == 0:
 		format = "empty body"
+	case isLiandongBrowserVerificationPage(normalized):
+		format = "received an upstream browser verification page instead of JSON"
 	case normalized[0] == '<':
 		format = "received HTML instead of JSON"
 	case len(normalized) >= 2 && normalized[0] == 0x1f && normalized[1] == 0x8b:
@@ -755,6 +775,12 @@ func invalidLiandongJSONResponse(kind string, body []byte) error {
 		format,
 		len(body),
 	)
+}
+
+func isLiandongBrowserVerificationPage(body []byte) bool {
+	normalized := bytes.ToLower(normalizeLiandongJSONBody(body))
+	return bytes.Contains(normalized, []byte("<script")) &&
+		bytes.Contains(normalized, []byte("var arg1="))
 }
 
 func parseLiandongCreateTradeNo(body []byte) (string, error) {
@@ -1307,6 +1333,9 @@ func sanitizeLiandongDiagnostic(message string, secrets ...string) string {
 }
 
 func liandongProviderResponseDiagnostic(body []byte, secrets ...string) string {
+	if isLiandongBrowserVerificationPage(body) {
+		return "<browser verification page omitted>"
+	}
 	diagnostic := sanitizeLiandongDiagnostic(
 		string(normalizeLiandongJSONBody(body)),
 		secrets...,

@@ -902,7 +902,7 @@ export function LiandongPaymentSection() {
                   id='liandong-proxy-url'
                   value={settings.proxy_url}
                   maxLength={2048}
-                  placeholder='socks5h://127.0.0.1:1080'
+                  placeholder='socks5://127.0.0.1:10808:username:password'
                   onChange={(event) =>
                     setSettings((current) => ({
                       ...current,
@@ -912,7 +912,7 @@ export function LiandongPaymentSection() {
                 />
                 <p className='text-muted-foreground text-xs'>
                   {t(
-                    'Use socks5:// or socks5h:// with host and port. Configure authentication separately.'
+                    'Supports socks5://host:port, socks5://host:port:username:password, username:password:host:port, username:password@host:port, and host:port@username:password. Put credentials in the URL or configure them separately, not both.'
                   )}
                 </p>
               </div>

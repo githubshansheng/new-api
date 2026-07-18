@@ -121,6 +121,7 @@ const defaultSettings: LiandongSettings = {
   base_url: 'https://pay.ldxp.cn',
   proxy_enabled: false,
   proxy_url: '',
+  proxy_timeout_seconds: 30,
   poll_interval_seconds: 30,
   client_poll_interval_seconds: 5,
   reconcile_batch_size: 50,
@@ -356,6 +357,7 @@ export function LiandongPaymentSection() {
         base_url: settings.base_url,
         proxy_enabled: settings.proxy_enabled,
         proxy_url: settings.proxy_url,
+        proxy_timeout_seconds: settings.proxy_timeout_seconds,
         poll_interval_seconds: settings.poll_interval_seconds,
         client_poll_interval_seconds: settings.client_poll_interval_seconds,
         reconcile_batch_size: settings.reconcile_batch_size,
@@ -879,28 +881,54 @@ export function LiandongPaymentSection() {
           </div>
 
           {settings.proxy_enabled && (
-            <div className='grid gap-1.5 sm:col-span-2'>
-              <Label htmlFor='liandong-proxy-url'>
-                {t('Card marketplace proxy URL')}
-              </Label>
-              <Input
-                id='liandong-proxy-url'
-                value={settings.proxy_url}
-                maxLength={2048}
-                placeholder='http://username:password@127.0.0.1:7890'
-                onChange={(event) =>
-                  setSettings((current) => ({
-                    ...current,
-                    proxy_url: event.target.value,
-                  }))
-                }
-              />
-              <p className='text-muted-foreground text-xs'>
-                {t(
-                  'Supports HTTP, HTTPS, and SOCKS5 proxy URLs, with optional username and password in this field. Examples: http://username:password@host:port and socks5://host:port:username:password.'
-                )}
-              </p>
-            </div>
+            <>
+              <div className='grid gap-1.5 sm:col-span-2'>
+                <Label htmlFor='liandong-proxy-url'>
+                  {t('Card marketplace proxy URL')}
+                </Label>
+                <Input
+                  id='liandong-proxy-url'
+                  value={settings.proxy_url}
+                  maxLength={2048}
+                  placeholder='http://username:password@127.0.0.1:7890'
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      proxy_url: event.target.value,
+                    }))
+                  }
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'Supports HTTP, HTTPS, and SOCKS5 proxy URLs, with optional username and password in this field. Examples: http://username:password@host:port and socks5://host:port:username:password.'
+                  )}
+                </p>
+              </div>
+              <div className='grid gap-1.5'>
+                <Label htmlFor='liandong-proxy-timeout'>
+                  {t('Proxy timeout (seconds)')}
+                </Label>
+                <Input
+                  id='liandong-proxy-timeout'
+                  type='number'
+                  min={5}
+                  max={300}
+                  step={1}
+                  value={settings.proxy_timeout_seconds}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      proxy_timeout_seconds: event.target.valueAsNumber || 5,
+                    }))
+                  }
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'Sets the connection, TLS handshake, response, and total request timeout only for card marketplace requests using the proxy. Allowed range: 5 to 300 seconds.'
+                  )}
+                </p>
+              </div>
+            </>
           )}
 
           <div className='grid gap-1.5'>

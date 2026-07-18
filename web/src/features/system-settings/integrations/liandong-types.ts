@@ -34,6 +34,7 @@ export type LiandongSettings = {
   base_url: string
   proxy_enabled: boolean
   proxy_url: string
+  proxy_timeout_seconds: number
   poll_interval_seconds: number
   client_poll_interval_seconds: number
   reconcile_batch_size: number

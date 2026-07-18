@@ -53,11 +53,13 @@ func TestNormalizeLiandongBaseURL(t *testing.T) {
 	}
 }
 
-func TestNormalizeLiandongSOCKS5ProxyURL(t *testing.T) {
+func TestParseLiandongSOCKS5Proxy(t *testing.T) {
 	tests := []struct {
 		name      string
 		input     string
 		expected  string
+		username  string
+		password  string
 		wantError bool
 	}{
 		{
@@ -76,8 +78,50 @@ func TestNormalizeLiandongSOCKS5ProxyURL(t *testing.T) {
 			wantError: true,
 		},
 		{
-			name:      "rejects embedded credentials",
-			input:     "socks5://user:password@proxy.example.com:1080",
+			name:     "scheme with embedded credentials",
+			input:    "socks5://user:password@proxy.example.com:1080",
+			expected: "socks5://proxy.example.com:1080",
+			username: "user",
+			password: "password",
+		},
+		{
+			name:     "endpoint then credentials",
+			input:    "socks5://127.0.0.1:10808:user:password",
+			expected: "socks5://127.0.0.1:10808",
+			username: "user",
+			password: "password",
+		},
+		{
+			name:     "credentials then endpoint",
+			input:    "user:password:127.0.0.1:10808",
+			expected: "socks5h://127.0.0.1:10808",
+			username: "user",
+			password: "password",
+		},
+		{
+			name:     "credentials at endpoint",
+			input:    "user:password@127.0.0.1:10808",
+			expected: "socks5h://127.0.0.1:10808",
+			username: "user",
+			password: "password",
+		},
+		{
+			name:     "endpoint at credentials",
+			input:    "127.0.0.1:10808@user:password",
+			expected: "socks5h://127.0.0.1:10808",
+			username: "user",
+			password: "password",
+		},
+		{
+			name:     "IPv6 with credentials",
+			input:    "socks5://[::1]:1080:user:password",
+			expected: "socks5://[::1]:1080",
+			username: "user",
+			password: "password",
+		},
+		{
+			name:      "rejects incomplete credentials",
+			input:     "socks5://127.0.0.1:10808:user",
 			wantError: true,
 		},
 		{
@@ -89,13 +133,15 @@ func TestNormalizeLiandongSOCKS5ProxyURL(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			actual, err := NormalizeLiandongSOCKS5ProxyURL(test.input)
+			actual, err := ParseLiandongSOCKS5Proxy(test.input)
 			if test.wantError {
 				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, test.expected, actual)
+			assert.Equal(t, test.expected, actual.URL)
+			assert.Equal(t, test.username, actual.Username)
+			assert.Equal(t, test.password, actual.Password)
 		})
 	}
 }

@@ -34,8 +34,6 @@ export type LiandongSettings = {
   base_url: string
   proxy_enabled: boolean
   proxy_url: string
-  proxy_username_configured: boolean
-  proxy_password_configured: boolean
   poll_interval_seconds: number
   client_poll_interval_seconds: number
   reconcile_batch_size: number
@@ -53,8 +51,6 @@ export type LiandongSettingsUpdate = Partial<
     | 'username_configured'
     | 'password_configured'
     | 'merchant_token_configured'
-    | 'proxy_username_configured'
-    | 'proxy_password_configured'
   >
 > & {
   username?: string
@@ -63,10 +59,6 @@ export type LiandongSettingsUpdate = Partial<
   clear_username?: boolean
   clear_password?: boolean
   clear_token?: boolean
-  proxy_username?: string
-  proxy_password?: string
-  clear_proxy_username?: boolean
-  clear_proxy_password?: boolean
 }
 
 export type LiandongRootProduct = {

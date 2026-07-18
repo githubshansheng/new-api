@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -318,6 +319,40 @@ func TestUpdateLiandongSettingsAllowsEmergencyDisableWithIncompleteCredentials(t
 	assert.False(t, settingsSnapshot.Enabled)
 }
 
+func TestUpdateLiandongSettingsDisablesProxyWithoutConnectivityCheck(t *testing.T) {
+	setupLiandongControllerTestDB(t)
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongProxyEnabled":  "true",
+		"LiandongProxyURL":      "socks5h://127.0.0.1:10808",
+		"LiandongProxyUsername": "configured-user",
+		"LiandongProxyPassword": "configured-password",
+	}))
+
+	previousValidator := liandongProxyValidator
+	liandongProxyValidator = func(context.Context, setting.LiandongPaymentSettings) error {
+		return assert.AnError
+	}
+	t.Cleanup(func() {
+		liandongProxyValidator = previousValidator
+	})
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(
+		http.MethodPut,
+		"/api/option/liandong",
+		strings.NewReader(`{"proxy_enabled":false}`),
+	)
+	context.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateLiandongSettings(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
+	require.NoError(t, err)
+	assert.False(t, settingsSnapshot.ProxyEnabled)
+}
+
 func TestUpdateLiandongSettingsEnablesChildControlsByDefault(t *testing.T) {
 	setupLiandongControllerTestDB(t)
 	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
@@ -370,6 +405,13 @@ func TestUpdateLiandongSettingsStoresIndependentPollingIntervals(t *testing.T) {
 
 func TestUpdateLiandongSettingsStoresBaseURLAndSOCKS5Proxy(t *testing.T) {
 	setupLiandongControllerTestDB(t)
+	previousValidator := liandongProxyValidator
+	liandongProxyValidator = func(context.Context, setting.LiandongPaymentSettings) error {
+		return nil
+	}
+	t.Cleanup(func() {
+		liandongProxyValidator = previousValidator
+	})
 
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)

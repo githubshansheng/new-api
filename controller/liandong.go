@@ -28,6 +28,8 @@ const (
 	liandongThumbnailMaxDimension = 2048
 )
 
+var liandongProxyValidator = service.ValidateLiandongSOCKS5Proxy
+
 type liandongCreateOrderRequest struct {
 	ProductID int `json:"product_id"`
 }
@@ -333,6 +335,7 @@ func UpdateLiandongSettings(c *gin.Context) {
 	setBool("LiandongIframeEnabled", req.IframeEnabled, &updated.IframeEnabled)
 	setBool("LiandongProxyEnabled", req.ProxyEnabled, &updated.ProxyEnabled)
 
+	proxyCredentialsChanged := false
 	if req.BaseURL != nil {
 		normalized, err := setting.NormalizeLiandongBaseURL(*req.BaseURL)
 		if err != nil {
@@ -343,16 +346,29 @@ func UpdateLiandongSettings(c *gin.Context) {
 		values["LiandongBaseURL"] = normalized
 	}
 	if req.ProxyURL != nil {
-		normalized, err := setting.NormalizeLiandongSOCKS5ProxyURL(*req.ProxyURL)
+		proxyConfig, err := setting.ParseLiandongSOCKS5Proxy(*req.ProxyURL)
 		if err != nil {
 			common.ApiErrorMsg(c, err.Error())
 			return
 		}
-		updated.ProxyURL = normalized
-		values["LiandongProxyURL"] = normalized
+		if proxyConfig.Username != "" {
+			if req.ProxyUsername != nil ||
+				req.ProxyPassword != nil ||
+				req.ClearProxyUsername ||
+				req.ClearProxyPassword {
+				common.ApiErrorMsg(c, "SOCKS5 proxy credentials must be provided either in the URL or in the separate fields")
+				return
+			}
+			updated.ProxyUsername = proxyConfig.Username
+			updated.ProxyPassword = proxyConfig.Password
+			values["LiandongProxyUsername"] = proxyConfig.Username
+			values["LiandongProxyPassword"] = proxyConfig.Password
+			proxyCredentialsChanged = true
+		}
+		updated.ProxyURL = proxyConfig.URL
+		values["LiandongProxyURL"] = proxyConfig.URL
 	}
 
-	proxyCredentialsChanged := false
 	if req.ClearProxyUsername {
 		updated.ProxyUsername = ""
 		values["LiandongProxyUsername"] = ""
@@ -532,6 +548,19 @@ func UpdateLiandongSettings(c *gin.Context) {
 		hasProxyPassword := updated.ProxyPassword != ""
 		if hasProxyUsername != hasProxyPassword {
 			common.ApiErrorMsg(c, "SOCKS5 proxy username and password must be configured together")
+			return
+		}
+	}
+	emergencyDisable := req.Enabled != nil && !*req.Enabled
+	disablingProxy := req.ProxyEnabled != nil && !*req.ProxyEnabled
+	proxyConfigurationChanged := enablingGateway ||
+		req.BaseURL != nil ||
+		req.ProxyEnabled != nil ||
+		req.ProxyURL != nil ||
+		proxyCredentialsChanged
+	if !emergencyDisable && !disablingProxy && updated.ProxyURL != "" && proxyConfigurationChanged {
+		if err := liandongProxyValidator(c.Request.Context(), updated); err != nil {
+			common.ApiErrorMsg(c, err.Error())
 			return
 		}
 	}

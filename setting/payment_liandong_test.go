@@ -53,7 +53,7 @@ func TestNormalizeLiandongBaseURL(t *testing.T) {
 	}
 }
 
-func TestParseLiandongSOCKS5Proxy(t *testing.T) {
+func TestParseLiandongProxy(t *testing.T) {
 	tests := []struct {
 		name      string
 		input     string
@@ -71,6 +71,25 @@ func TestParseLiandongSOCKS5Proxy(t *testing.T) {
 			name:     "IPv6",
 			input:    "socks5://[::1]:1080",
 			expected: "socks5://[::1]:1080",
+		},
+		{
+			name:     "HTTP",
+			input:    "http://127.0.0.1:7890/",
+			expected: "http://127.0.0.1:7890",
+		},
+		{
+			name:     "HTTP with embedded credentials",
+			input:    "http://user:password@proxy.example.com:8080",
+			expected: "http://proxy.example.com:8080",
+			username: "user",
+			password: "password",
+		},
+		{
+			name:     "HTTPS with embedded credentials",
+			input:    "https://user:password@proxy.example.com:8443",
+			expected: "https://proxy.example.com:8443",
+			username: "user",
+			password: "password",
 		},
 		{
 			name:      "rejects missing port",
@@ -125,15 +144,15 @@ func TestParseLiandongSOCKS5Proxy(t *testing.T) {
 			wantError: true,
 		},
 		{
-			name:      "rejects HTTP proxy",
-			input:     "http://proxy.example.com:8080",
+			name:      "rejects unsupported scheme",
+			input:     "ftp://proxy.example.com:21",
 			wantError: true,
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			actual, err := ParseLiandongSOCKS5Proxy(test.input)
+			actual, err := ParseLiandongProxy(test.input)
 			if test.wantError {
 				require.Error(t, err)
 				return

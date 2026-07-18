@@ -240,6 +240,7 @@ type LiandongOrderCreateResult struct {
 
 func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error) {
 	settingsSnapshot := setting.LiandongPaymentSettings{
+		BaseURL:                   setting.DefaultLiandongBaseURL,
 		PollIntervalSeconds:       setting.DefaultLiandongPollIntervalSeconds,
 		ClientPollIntervalSeconds: setting.DefaultLiandongClientPollIntervalSeconds,
 		ReconcileBatchSize:        setting.DefaultLiandongReconcileBatchSize,
@@ -253,6 +254,11 @@ func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error)
 		"LiandongReconcileEnabled",
 		"LiandongFulfillEnabled",
 		"LiandongIframeEnabled",
+		"LiandongBaseURL",
+		"LiandongProxyEnabled",
+		"LiandongProxyURL",
+		"LiandongProxyUsername",
+		"LiandongProxyPassword",
 		"LiandongPollIntervalSeconds",
 		"LiandongClientPollIntervalSeconds",
 		"LiandongReconcileBatchSize",
@@ -279,6 +285,20 @@ func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error)
 			settingsSnapshot.FulfillEnabled = option.Value == "true"
 		case "LiandongIframeEnabled":
 			settingsSnapshot.IframeEnabled = option.Value == "true"
+		case "LiandongBaseURL":
+			if normalized, err := setting.NormalizeLiandongBaseURL(option.Value); err == nil {
+				settingsSnapshot.BaseURL = normalized
+			}
+		case "LiandongProxyEnabled":
+			settingsSnapshot.ProxyEnabled = option.Value == "true"
+		case "LiandongProxyURL":
+			if normalized, err := setting.NormalizeLiandongSOCKS5ProxyURL(option.Value); err == nil {
+				settingsSnapshot.ProxyURL = normalized
+			}
+		case "LiandongProxyUsername":
+			settingsSnapshot.ProxyUsername = strings.TrimSpace(option.Value)
+		case "LiandongProxyPassword":
+			settingsSnapshot.ProxyPassword = option.Value
 		case "LiandongPollIntervalSeconds":
 			seconds, err := strconv.Atoi(option.Value)
 			if err == nil &&

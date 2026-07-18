@@ -235,7 +235,9 @@ func UpdateOptionsBulk(values map[string]string) error {
 			writeDB := tx
 			if k == "LiandongMerchantToken" ||
 				k == "LiandongPassword" ||
-				k == "LiandongUsername" {
+				k == "LiandongUsername" ||
+				k == "LiandongProxyUsername" ||
+				k == "LiandongProxyPassword" {
 				writeDB = tx.Session(&gorm.Session{Logger: gormlogger.Discard})
 			}
 			option := Option{Key: k}

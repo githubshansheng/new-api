@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +24,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
-	"golang.org/x/net/proxy"
+	xproxy "golang.org/x/net/proxy"
 )
 
 const (
@@ -217,18 +218,21 @@ func newLiandongClientWithSettings(
 	proxyFunc := http.ProxyFromEnvironment
 	var dialContext func(context.Context, string, string) (net.Conn, error)
 	if settingsSnapshot.ProxyEnabled {
-		proxyDialContext, proxyConfigErr := liandongSOCKS5DialContext(settingsSnapshot)
+		configuredProxyFunc, proxyDialContext, proxyConfigErr := liandongProxyTransport(
+			settingsSnapshot,
+		)
 		if proxyConfigErr != nil {
 			if configErr == nil {
 				configErr = proxyConfigErr
 			}
 			proxyErr := proxyConfigErr
+			proxyFunc = nil
 			dialContext = func(context.Context, string, string) (net.Conn, error) {
 				return nil, proxyErr
 			}
 		} else {
+			proxyFunc = configuredProxyFunc
 			dialContext = proxyDialContext
-			proxyFunc = nil
 		}
 	}
 	parsedBaseURL, err := url.Parse(baseURL)
@@ -276,15 +280,19 @@ func newLiandongClientWithSettings(
 	}
 }
 
-func liandongSOCKS5DialContext(
+func liandongProxyTransport(
 	settingsSnapshot setting.LiandongPaymentSettings,
-) (func(context.Context, string, string) (net.Conn, error), error) {
-	config, err := setting.ParseLiandongSOCKS5Proxy(settingsSnapshot.ProxyURL)
+) (
+	func(*http.Request) (*url.URL, error),
+	func(context.Context, string, string) (net.Conn, error),
+	error,
+) {
+	config, err := setting.ParseLiandongProxy(settingsSnapshot.ProxyURL)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if config.URL == "" {
-		return nil, errors.New("SOCKS5 proxy URL is required when the proxy is enabled")
+		return nil, nil, errors.New("proxy URL is required when the proxy is enabled")
 	}
 	username := config.Username
 	password := config.Password
@@ -295,24 +303,30 @@ func liandongSOCKS5DialContext(
 	hasUsername := username != ""
 	hasPassword := password != ""
 	if hasUsername != hasPassword {
-		return nil, errors.New("SOCKS5 proxy username and password must be configured together")
+		return nil, nil, errors.New("proxy username and password must be configured together")
 	}
 	parsed, err := url.Parse(config.URL)
 	if err != nil {
-		return nil, errors.New("invalid SOCKS5 proxy URL")
+		return nil, nil, errors.New("invalid proxy URL")
 	}
-	var auth *proxy.Auth
 	if hasUsername {
-		auth = &proxy.Auth{User: username, Password: password}
+		parsed.User = url.UserPassword(username, password)
 	}
-	dialer, err := proxy.SOCKS5("tcp", parsed.Host, auth, proxy.Direct)
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		return http.ProxyURL(parsed), nil, nil
+	}
+	var auth *xproxy.Auth
+	if hasUsername {
+		auth = &xproxy.Auth{User: username, Password: password}
+	}
+	dialer, err := xproxy.SOCKS5("tcp", parsed.Host, auth, xproxy.Direct)
 	if err != nil {
-		return nil, errors.New("SOCKS5 proxy dialer could not be created")
+		return nil, nil, errors.New("SOCKS5 proxy dialer could not be created")
 	}
-	if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
-		return contextDialer.DialContext, nil
+	if contextDialer, ok := dialer.(xproxy.ContextDialer); ok {
+		return nil, contextDialer.DialContext, nil
 	}
-	return func(ctx context.Context, network, address string) (net.Conn, error) {
+	return nil, func(ctx context.Context, network, address string) (net.Conn, error) {
 		type dialResult struct {
 			conn net.Conn
 			err  error
@@ -331,12 +345,12 @@ func liandongSOCKS5DialContext(
 	}, nil
 }
 
-func ValidateLiandongSOCKS5Proxy(
+func ValidateLiandongProxy(
 	ctx context.Context,
 	settingsSnapshot setting.LiandongPaymentSettings,
 ) error {
 	if strings.TrimSpace(settingsSnapshot.ProxyURL) == "" {
-		return errors.New("SOCKS5 proxy URL is required")
+		return errors.New("proxy URL is required")
 	}
 	settingsSnapshot.ProxyEnabled = true
 	client := newLiandongClientWithSettings(settingsSnapshot)
@@ -345,7 +359,7 @@ func ValidateLiandongSOCKS5Proxy(
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, client.baseURL, nil)
 	if err != nil {
-		return errors.New("SOCKS5 proxy URL is invalid")
+		return errors.New("proxy URL is invalid")
 	}
 	req.Header.Set("Accept", "*/*")
 	validationClient := *client.httpClient
@@ -354,42 +368,61 @@ func ValidateLiandongSOCKS5Proxy(
 	}
 	resp, err := validationClient.Do(req)
 	if err != nil {
-		return classifyLiandongSOCKS5Error(err, settingsSnapshot)
+		return classifyLiandongProxyError(err, settingsSnapshot)
 	}
 	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusProxyAuthRequired {
+		return errors.New("Proxy authentication failed")
+	}
 	return nil
 }
 
-func classifyLiandongSOCKS5Error(
+func classifyLiandongProxyError(
 	err error,
 	settingsSnapshot setting.LiandongPaymentSettings,
 ) error {
 	if err == nil {
 		return nil
 	}
+	var unknownAuthorityError x509.UnknownAuthorityError
+	var certificateInvalidError x509.CertificateInvalidError
 	lower := strings.ToLower(err.Error())
 	switch {
 	case errors.Is(err, context.DeadlineExceeded),
 		strings.Contains(lower, "i/o timeout"),
 		strings.Contains(lower, "timed out"):
-		return errors.New("SOCKS5 proxy connection timed out")
+		return errors.New("Proxy connection timed out")
 	case strings.Contains(lower, "connection refused"):
-		return errors.New("SOCKS5 proxy connection refused")
+		return errors.New("Proxy connection refused")
 	case strings.Contains(lower, "authentication failed"),
 		strings.Contains(lower, "username/password"),
-		strings.Contains(lower, "no acceptable authentication"):
-		return errors.New("SOCKS5 proxy authentication failed")
+		strings.Contains(lower, "no acceptable authentication"),
+		strings.Contains(lower, "proxy authentication required"),
+		strings.Contains(lower, "status code 407"):
+		return errors.New("Proxy authentication failed")
 	case strings.Contains(lower, "no such host"),
 		strings.Contains(lower, "temporary failure in name resolution"),
 		strings.Contains(lower, "name or service not known"):
-		return errors.New("SOCKS5 proxy host could not be resolved")
+		return errors.New("Proxy host could not be resolved")
+	case errors.As(err, &unknownAuthorityError),
+		errors.As(err, &certificateInvalidError),
+		strings.Contains(lower, "x509:"),
+		strings.Contains(lower, "tls: failed to verify certificate"):
+		return errors.New("Proxy TLS certificate validation failed")
 	default:
+		proxyUsername := settingsSnapshot.ProxyUsername
+		proxyPassword := settingsSnapshot.ProxyPassword
+		if config, parseErr := setting.ParseLiandongProxy(settingsSnapshot.ProxyURL); parseErr == nil &&
+			config.Username != "" {
+			proxyUsername = config.Username
+			proxyPassword = config.Password
+		}
 		return fmt.Errorf(
-			"SOCKS5 proxy connection failed: %s",
+			"Proxy connection failed: %s",
 			sanitizeLiandongDiagnostic(
 				err.Error(),
-				settingsSnapshot.ProxyUsername,
-				settingsSnapshot.ProxyPassword,
+				proxyUsername,
+				proxyPassword,
 			),
 		)
 	}

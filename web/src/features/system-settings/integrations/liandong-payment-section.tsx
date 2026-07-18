@@ -846,9 +846,9 @@ export function LiandongPaymentSection() {
             onCheckedChange={(proxy_enabled) =>
               setSettings((current) => ({ ...current, proxy_enabled }))
             }
-            label={t('Enable dedicated SOCKS5 proxy')}
+            label={t('Enable dedicated card marketplace proxy')}
             description={t(
-              'Routes card marketplace backend API requests through the configured SOCKS5 proxy. User payment pages are opened directly in the browser.'
+              'Routes only card marketplace backend API requests through the configured HTTP, HTTPS, or SOCKS5 proxy. User payment pages remain direct browser requests.'
             )}
           />
         </SettingsFormGrid>
@@ -881,13 +881,13 @@ export function LiandongPaymentSection() {
           {settings.proxy_enabled && (
             <div className='grid gap-1.5 sm:col-span-2'>
               <Label htmlFor='liandong-proxy-url'>
-                {t('SOCKS5 proxy URL')}
+                {t('Card marketplace proxy URL')}
               </Label>
               <Input
                 id='liandong-proxy-url'
                 value={settings.proxy_url}
                 maxLength={2048}
-                placeholder='socks5://127.0.0.1:10808:username:password'
+                placeholder='http://username:password@127.0.0.1:7890'
                 onChange={(event) =>
                   setSettings((current) => ({
                     ...current,
@@ -897,7 +897,7 @@ export function LiandongPaymentSection() {
               />
               <p className='text-muted-foreground text-xs'>
                 {t(
-                  'Supports socks5://host:port, socks5://host:port:username:password, username:password:host:port, username:password@host:port, and host:port@username:password. Proxy credentials must be included in this field.'
+                  'Supports HTTP, HTTPS, and SOCKS5 proxy URLs, with optional username and password in this field. Examples: http://username:password@host:port and socks5://host:port:username:password.'
                 )}
               </p>
             </div>

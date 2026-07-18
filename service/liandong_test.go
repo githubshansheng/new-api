@@ -329,6 +329,39 @@ func TestNewLiandongClientUsesDedicatedSOCKS5ProxyWithoutAuthentication(t *testi
 	assert.NotNil(t, transport.DialContext)
 }
 
+func TestNewLiandongClientUsesDedicatedHTTPProxies(t *testing.T) {
+	for _, proxyURL := range []string{
+		"http://proxy-user:proxy-password@127.0.0.1:7890",
+		"https://proxy-user:proxy-password@proxy.example.com:8443",
+	} {
+		t.Run(proxyURL, func(t *testing.T) {
+			client := newLiandongClientWithSettings(setting.LiandongPaymentSettings{
+				BaseURL:      "https://gateway.example.com/card",
+				ProxyEnabled: true,
+				ProxyURL:     proxyURL,
+			})
+
+			require.NoError(t, client.configErr)
+			transport, ok := client.httpClient.Transport.(*http.Transport)
+			require.True(t, ok)
+			require.NotNil(t, transport.Proxy)
+
+			request := httptest.NewRequest(
+				http.MethodGet,
+				"https://gateway.example.com/card",
+				nil,
+			)
+			configuredProxy, err := transport.Proxy(request)
+			require.NoError(t, err)
+			require.NotNil(t, configuredProxy)
+			assert.Equal(t, "proxy-user", configuredProxy.User.Username())
+			password, hasPassword := configuredProxy.User.Password()
+			assert.True(t, hasPassword)
+			assert.Equal(t, "proxy-password", password)
+		})
+	}
+}
+
 func TestLiandongMerchantTokenOnlySentToOrderList(t *testing.T) {
 	type capturedRequest struct {
 		path  string

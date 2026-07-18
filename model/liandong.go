@@ -292,7 +292,7 @@ func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error)
 		case "LiandongProxyEnabled":
 			settingsSnapshot.ProxyEnabled = option.Value == "true"
 		case "LiandongProxyURL":
-			if normalized, err := setting.NormalizeLiandongSOCKS5ProxyURL(option.Value); err == nil {
+			if normalized, err := setting.NormalizeLiandongProxyURL(option.Value); err == nil {
 				settingsSnapshot.ProxyURL = normalized
 			}
 		case "LiandongProxyUsername":

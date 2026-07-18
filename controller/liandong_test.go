@@ -403,7 +403,7 @@ func TestUpdateLiandongSettingsStoresIndependentPollingIntervals(t *testing.T) {
 	assert.NotContains(t, recorder.Body.String(), "merchant_token")
 }
 
-func TestUpdateLiandongSettingsStoresBaseURLAndSOCKS5Proxy(t *testing.T) {
+func TestUpdateLiandongSettingsStoresBaseURLAndHTTPProxy(t *testing.T) {
 	setupLiandongControllerTestDB(t)
 	previousValidator := liandongProxyValidator
 	liandongProxyValidator = func(context.Context, setting.LiandongPaymentSettings) error {
@@ -421,9 +421,7 @@ func TestUpdateLiandongSettingsStoresBaseURLAndSOCKS5Proxy(t *testing.T) {
 		strings.NewReader(`{
 			"base_url":"https://gateway.example.com/card/",
 			"proxy_enabled":true,
-			"proxy_url":"socks5h://127.0.0.1:1080/",
-			"proxy_username":"proxy-user",
-			"proxy_password":"proxy-password"
+			"proxy_url":"http://proxy-user:proxy-password@127.0.0.1:7890"
 		}`),
 	)
 	context.Request.Header.Set("Content-Type", "application/json")
@@ -435,11 +433,34 @@ func TestUpdateLiandongSettingsStoresBaseURLAndSOCKS5Proxy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "https://gateway.example.com/card", settingsSnapshot.BaseURL)
 	assert.True(t, settingsSnapshot.ProxyEnabled)
-	assert.Equal(t, "socks5h://127.0.0.1:1080", settingsSnapshot.ProxyURL)
+	assert.Equal(t, "http://127.0.0.1:7890", settingsSnapshot.ProxyURL)
 	assert.Equal(t, "proxy-user", settingsSnapshot.ProxyUsername)
 	assert.Equal(t, "proxy-password", settingsSnapshot.ProxyPassword)
 	assert.NotContains(t, recorder.Body.String(), "proxy-user")
 	assert.NotContains(t, recorder.Body.String(), "proxy-password")
+}
+
+func TestGetLiandongSettingsReturnsProxyCredentialsInURL(t *testing.T) {
+	setupLiandongControllerTestDB(t)
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongProxyEnabled":  "true",
+		"LiandongProxyURL":      "socks5h://127.0.0.1:10808",
+		"LiandongProxyUsername": "proxy-user",
+		"LiandongProxyPassword": "proxy-password",
+	}))
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/option/liandong", nil)
+
+	GetLiandongSettings(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(
+		t,
+		recorder.Body.String(),
+		"socks5h://proxy-user:proxy-password@127.0.0.1:10808",
+	)
 }
 
 func TestUpdateLiandongSettingsRequiresNewManualTokenWhenLeavingCredentialsMode(t *testing.T) {

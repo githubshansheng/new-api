@@ -9,6 +9,7 @@ import (
 	_ "image/png"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,7 +29,7 @@ const (
 	liandongThumbnailMaxDimension = 2048
 )
 
-var liandongProxyValidator = service.ValidateLiandongSOCKS5Proxy
+var liandongProxyValidator = service.ValidateLiandongProxy
 
 type liandongCreateOrderRequest struct {
 	ProductID int `json:"product_id"`
@@ -269,6 +270,18 @@ func GetLiandongSettings(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	proxyURL := settingsSnapshot.ProxyURL
+	if proxyURL != "" &&
+		strings.TrimSpace(settingsSnapshot.ProxyUsername) != "" &&
+		settingsSnapshot.ProxyPassword != "" {
+		if parsedProxyURL, parseErr := url.Parse(proxyURL); parseErr == nil {
+			parsedProxyURL.User = url.UserPassword(
+				settingsSnapshot.ProxyUsername,
+				settingsSnapshot.ProxyPassword,
+			)
+			proxyURL = parsedProxyURL.String()
+		}
+	}
 	common.ApiSuccess(c, gin.H{
 		"enabled":                      settingsSnapshot.Enabled,
 		"create_enabled":               settingsSnapshot.CreateEnabled,
@@ -277,7 +290,7 @@ func GetLiandongSettings(c *gin.Context) {
 		"iframe_enabled":               settingsSnapshot.IframeEnabled,
 		"base_url":                     settingsSnapshot.BaseURL,
 		"proxy_enabled":                settingsSnapshot.ProxyEnabled,
-		"proxy_url":                    settingsSnapshot.ProxyURL,
+		"proxy_url":                    proxyURL,
 		"proxy_username_configured":    strings.TrimSpace(settingsSnapshot.ProxyUsername) != "",
 		"proxy_password_configured":    settingsSnapshot.ProxyPassword != "",
 		"poll_interval_seconds":        settingsSnapshot.PollIntervalSeconds,
@@ -346,7 +359,7 @@ func UpdateLiandongSettings(c *gin.Context) {
 		values["LiandongBaseURL"] = normalized
 	}
 	if req.ProxyURL != nil {
-		proxyConfig, err := setting.ParseLiandongSOCKS5Proxy(*req.ProxyURL)
+		proxyConfig, err := setting.ParseLiandongProxy(*req.ProxyURL)
 		if err != nil {
 			common.ApiErrorMsg(c, err.Error())
 			return
@@ -356,13 +369,22 @@ func UpdateLiandongSettings(c *gin.Context) {
 				req.ProxyPassword != nil ||
 				req.ClearProxyUsername ||
 				req.ClearProxyPassword {
-				common.ApiErrorMsg(c, "SOCKS5 proxy credentials must be provided either in the URL or in the separate fields")
+				common.ApiErrorMsg(c, "Proxy credentials must be provided either in the URL or in the separate fields")
 				return
 			}
 			updated.ProxyUsername = proxyConfig.Username
 			updated.ProxyPassword = proxyConfig.Password
 			values["LiandongProxyUsername"] = proxyConfig.Username
 			values["LiandongProxyPassword"] = proxyConfig.Password
+			proxyCredentialsChanged = true
+		} else if req.ProxyUsername == nil &&
+			req.ProxyPassword == nil &&
+			!req.ClearProxyUsername &&
+			!req.ClearProxyPassword {
+			updated.ProxyUsername = ""
+			updated.ProxyPassword = ""
+			values["LiandongProxyUsername"] = ""
+			values["LiandongProxyPassword"] = ""
 			proxyCredentialsChanged = true
 		}
 		updated.ProxyURL = proxyConfig.URL
@@ -376,7 +398,7 @@ func UpdateLiandongSettings(c *gin.Context) {
 	} else if req.ProxyUsername != nil {
 		username := strings.TrimSpace(*req.ProxyUsername)
 		if username == "" || len(username) > 128 {
-			common.ApiErrorMsg(c, "Invalid SOCKS5 proxy username")
+			common.ApiErrorMsg(c, "Invalid proxy username")
 			return
 		}
 		updated.ProxyUsername = username
@@ -390,7 +412,7 @@ func UpdateLiandongSettings(c *gin.Context) {
 	} else if req.ProxyPassword != nil {
 		password := *req.ProxyPassword
 		if password == "" || len(password) > 256 {
-			common.ApiErrorMsg(c, "Invalid SOCKS5 proxy password")
+			common.ApiErrorMsg(c, "Invalid proxy password")
 			return
 		}
 		updated.ProxyPassword = password
@@ -541,13 +563,13 @@ func UpdateLiandongSettings(c *gin.Context) {
 	}
 	if updated.ProxyEnabled {
 		if updated.ProxyURL == "" {
-			common.ApiErrorMsg(c, "SOCKS5 proxy URL is required when the proxy is enabled")
+			common.ApiErrorMsg(c, "Proxy URL is required when the proxy is enabled")
 			return
 		}
 		hasProxyUsername := strings.TrimSpace(updated.ProxyUsername) != ""
 		hasProxyPassword := updated.ProxyPassword != ""
 		if hasProxyUsername != hasProxyPassword {
-			common.ApiErrorMsg(c, "SOCKS5 proxy username and password must be configured together")
+			common.ApiErrorMsg(c, "Proxy username and password must be configured together")
 			return
 		}
 	}

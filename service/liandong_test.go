@@ -85,6 +85,23 @@ func TestParseLiandongCreateTradeNo(t *testing.T) {
 	}
 }
 
+func TestParseLiandongCreateTradeNoAcceptsConfiguredBaseURL(t *testing.T) {
+	tradeNo, err := parseLiandongCreateTradeNoForBaseURL(
+		[]byte(
+			`{"payUrl":"https://gateway.example.com/card/shopApi/Pay/payment?trade_no=TRADE123"}`,
+		),
+		"https://gateway.example.com/card",
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "TRADE123", tradeNo)
+	assert.Equal(
+		t,
+		"https://gateway.example.com/card/shopApi/Pay/payment?trade_no=TRADE123",
+		liandongPaymentURL("https://gateway.example.com/card", "TRADE123"),
+	)
+}
+
 func TestParseLiandongLoginToken(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -279,6 +296,51 @@ func TestLiandongProviderResponseDiagnosticRedactsConfiguredSecrets(t *testing.T
 	assert.NotContains(t, diagnostic, "merchant-id")
 	assert.NotContains(t, diagnostic, "goods-1")
 	assert.NotContains(t, diagnostic, "123456789012")
+}
+
+func TestNewLiandongClientUsesDedicatedSOCKS5Proxy(t *testing.T) {
+	client := newLiandongClientWithSettings(setting.LiandongPaymentSettings{
+		BaseURL:       "https://gateway.example.com/card",
+		ProxyEnabled:  true,
+		ProxyURL:      "socks5h://127.0.0.1:1080",
+		ProxyUsername: "proxy-user",
+		ProxyPassword: "proxy-password",
+	})
+
+	require.NoError(t, client.configErr)
+	assert.Equal(t, "https://gateway.example.com/card", client.baseURL)
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotNil(t, transport.Proxy)
+	request := httptest.NewRequest(http.MethodGet, "https://gateway.example.com", nil)
+	proxyURL, err := transport.Proxy(request)
+	require.NoError(t, err)
+	require.NotNil(t, proxyURL)
+	assert.Equal(t, "socks5h", proxyURL.Scheme)
+	assert.Equal(t, "127.0.0.1:1080", proxyURL.Host)
+	assert.Equal(t, "proxy-user", proxyURL.User.Username())
+	password, hasPassword := proxyURL.User.Password()
+	assert.True(t, hasPassword)
+	assert.Equal(t, "proxy-password", password)
+}
+
+func TestNewLiandongClientUsesDedicatedSOCKS5ProxyWithoutAuthentication(t *testing.T) {
+	client := newLiandongClientWithSettings(setting.LiandongPaymentSettings{
+		BaseURL:      "https://gateway.example.com/card",
+		ProxyEnabled: true,
+		ProxyURL:     "socks5h://127.0.0.1:10808",
+	})
+
+	require.NoError(t, client.configErr)
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	request := httptest.NewRequest(http.MethodGet, "https://gateway.example.com", nil)
+	proxyURL, err := transport.Proxy(request)
+	require.NoError(t, err)
+	require.NotNil(t, proxyURL)
+	assert.Equal(t, "socks5h", proxyURL.Scheme)
+	assert.Equal(t, "127.0.0.1:10808", proxyURL.Host)
+	assert.Nil(t, proxyURL.User)
 }
 
 func TestLiandongMerchantTokenOnlySentToOrderList(t *testing.T) {

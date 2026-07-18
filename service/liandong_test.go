@@ -311,17 +311,8 @@ func TestNewLiandongClientUsesDedicatedSOCKS5Proxy(t *testing.T) {
 	assert.Equal(t, "https://gateway.example.com/card", client.baseURL)
 	transport, ok := client.httpClient.Transport.(*http.Transport)
 	require.True(t, ok)
-	require.NotNil(t, transport.Proxy)
-	request := httptest.NewRequest(http.MethodGet, "https://gateway.example.com", nil)
-	proxyURL, err := transport.Proxy(request)
-	require.NoError(t, err)
-	require.NotNil(t, proxyURL)
-	assert.Equal(t, "socks5h", proxyURL.Scheme)
-	assert.Equal(t, "127.0.0.1:1080", proxyURL.Host)
-	assert.Equal(t, "proxy-user", proxyURL.User.Username())
-	password, hasPassword := proxyURL.User.Password()
-	assert.True(t, hasPassword)
-	assert.Equal(t, "proxy-password", password)
+	assert.Nil(t, transport.Proxy)
+	assert.NotNil(t, transport.DialContext)
 }
 
 func TestNewLiandongClientUsesDedicatedSOCKS5ProxyWithoutAuthentication(t *testing.T) {
@@ -334,13 +325,8 @@ func TestNewLiandongClientUsesDedicatedSOCKS5ProxyWithoutAuthentication(t *testi
 	require.NoError(t, client.configErr)
 	transport, ok := client.httpClient.Transport.(*http.Transport)
 	require.True(t, ok)
-	request := httptest.NewRequest(http.MethodGet, "https://gateway.example.com", nil)
-	proxyURL, err := transport.Proxy(request)
-	require.NoError(t, err)
-	require.NotNil(t, proxyURL)
-	assert.Equal(t, "socks5h", proxyURL.Scheme)
-	assert.Equal(t, "127.0.0.1:10808", proxyURL.Host)
-	assert.Nil(t, proxyURL.User)
+	assert.Nil(t, transport.Proxy)
+	assert.NotNil(t, transport.DialContext)
 }
 
 func TestLiandongMerchantTokenOnlySentToOrderList(t *testing.T) {

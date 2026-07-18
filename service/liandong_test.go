@@ -276,6 +276,15 @@ func TestParseLiandongGoodsClassifiesHTMLWithoutLeakingBody(t *testing.T) {
 	assert.NotContains(t, err.Error(), "<html>")
 }
 
+func TestParseLiandongGoodsClassifiesBrowserVerificationPage(t *testing.T) {
+	body := []byte(`<html><script>var arg1='challenge';</script></html>`)
+
+	_, err := parseLiandongGoods(body)
+
+	require.ErrorContains(t, err, "upstream browser verification page")
+	assert.Equal(t, "<browser verification page omitted>", liandongProviderResponseDiagnostic(body))
+}
+
 func TestLiandongProviderResponseDiagnosticRedactsConfiguredSecrets(t *testing.T) {
 	diagnostic := liandongProviderResponseDiagnostic(
 		[]byte(
@@ -327,6 +336,22 @@ func TestNewLiandongClientUsesDedicatedSOCKS5ProxyWithoutAuthentication(t *testi
 	require.True(t, ok)
 	assert.Nil(t, transport.Proxy)
 	assert.NotNil(t, transport.DialContext)
+}
+
+func TestNewLiandongClientUsesConfiguredProxyTimeout(t *testing.T) {
+	client := newLiandongClientWithSettings(setting.LiandongPaymentSettings{
+		BaseURL:             "https://gateway.example.com/card",
+		ProxyEnabled:        true,
+		ProxyURL:            "socks5h://127.0.0.1:10808",
+		ProxyTimeoutSeconds: 75,
+	})
+
+	require.NoError(t, client.configErr)
+	assert.Equal(t, 75*time.Second, client.httpClient.Timeout)
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.Equal(t, 75*time.Second, transport.TLSHandshakeTimeout)
+	assert.Equal(t, 75*time.Second, transport.ResponseHeaderTimeout)
 }
 
 func TestNewLiandongClientUsesDedicatedHTTPProxies(t *testing.T) {

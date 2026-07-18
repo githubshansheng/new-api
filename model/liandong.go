@@ -241,6 +241,7 @@ type LiandongOrderCreateResult struct {
 func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error) {
 	settingsSnapshot := setting.LiandongPaymentSettings{
 		BaseURL:                   setting.DefaultLiandongBaseURL,
+		ProxyTimeoutSeconds:       setting.DefaultLiandongProxyTimeoutSeconds,
 		PollIntervalSeconds:       setting.DefaultLiandongPollIntervalSeconds,
 		ClientPollIntervalSeconds: setting.DefaultLiandongClientPollIntervalSeconds,
 		ReconcileBatchSize:        setting.DefaultLiandongReconcileBatchSize,
@@ -259,6 +260,7 @@ func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error)
 		"LiandongProxyURL",
 		"LiandongProxyUsername",
 		"LiandongProxyPassword",
+		"LiandongProxyTimeoutSeconds",
 		"LiandongPollIntervalSeconds",
 		"LiandongClientPollIntervalSeconds",
 		"LiandongReconcileBatchSize",
@@ -299,6 +301,13 @@ func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error)
 			settingsSnapshot.ProxyUsername = strings.TrimSpace(option.Value)
 		case "LiandongProxyPassword":
 			settingsSnapshot.ProxyPassword = option.Value
+		case "LiandongProxyTimeoutSeconds":
+			seconds, err := strconv.Atoi(option.Value)
+			if err == nil &&
+				seconds >= setting.MinLiandongProxyTimeoutSeconds &&
+				seconds <= setting.MaxLiandongProxyTimeoutSeconds {
+				settingsSnapshot.ProxyTimeoutSeconds = seconds
+			}
 		case "LiandongPollIntervalSeconds":
 			seconds, err := strconv.Atoi(option.Value)
 			if err == nil &&

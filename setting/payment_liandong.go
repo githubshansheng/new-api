@@ -23,6 +23,9 @@ const (
 	DefaultLiandongPaymentTimeoutMinutes     = 30
 	MinLiandongPaymentTimeoutMinutes         = 1
 	MaxLiandongPaymentTimeoutMinutes         = 1440
+	DefaultLiandongProxyTimeoutSeconds       = 30
+	MinLiandongProxyTimeoutSeconds           = 5
+	MaxLiandongProxyTimeoutSeconds           = 300
 
 	LiandongAuthModeManualToken = "manual_token"
 	LiandongAuthModeCredentials = "credentials"
@@ -39,6 +42,7 @@ type LiandongPaymentSettings struct {
 	ProxyURL                  string
 	ProxyUsername             string
 	ProxyPassword             string
+	ProxyTimeoutSeconds       int
 	PollIntervalSeconds       int
 	ClientPollIntervalSeconds int
 	ReconcileBatchSize        int

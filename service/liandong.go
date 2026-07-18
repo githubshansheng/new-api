@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	liandongBaseURL            = "https://pay.ldxp.cn"
+	liandongBaseURL            = setting.DefaultLiandongBaseURL
 	liandongCreatePath         = "/shopApi/Pay/order"
 	liandongPaymentPath        = "/shopApi/Pay/payment"
 	liandongOrderListPath      = "/merchantApi/order/list"
@@ -66,6 +66,7 @@ type LiandongPaymentView struct {
 type liandongClient struct {
 	httpClient *http.Client
 	baseURL    string
+	configErr  error
 }
 
 type liandongCreateError struct {
@@ -199,12 +200,44 @@ type liandongGoodsListData struct {
 }
 
 func newLiandongClient() *liandongClient {
+	settingsSnapshot := setting.LiandongPaymentSettings{
+		BaseURL: setting.DefaultLiandongBaseURL,
+	}
+	if loaded, err := model.GetLiandongPaymentSettingsFromDB(); err == nil {
+		settingsSnapshot = loaded
+	}
+	return newLiandongClientWithSettings(settingsSnapshot)
+}
+
+func newLiandongClientWithSettings(
+	settingsSnapshot setting.LiandongPaymentSettings,
+) *liandongClient {
+	baseURL, configErr := setting.NormalizeLiandongBaseURL(settingsSnapshot.BaseURL)
+	proxyFunc := http.ProxyFromEnvironment
+	if settingsSnapshot.ProxyEnabled {
+		proxyURL, err := liandongSOCKS5ProxyURL(settingsSnapshot)
+		if err != nil {
+			if configErr == nil {
+				configErr = err
+			}
+			proxyErr := err
+			proxyFunc = func(*http.Request) (*url.URL, error) {
+				return nil, proxyErr
+			}
+		} else {
+			proxyFunc = http.ProxyURL(proxyURL)
+		}
+	}
+	parsedBaseURL, err := url.Parse(baseURL)
+	if err != nil && configErr == nil {
+		configErr = err
+	}
 	dialer := &net.Dialer{
 		Timeout:   4 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 proxyFunc,
 		DialContext:           dialer.DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          20,
@@ -224,14 +257,45 @@ func newLiandongClient() *liandongClient {
 				if len(via) >= 3 {
 					return errors.New("too many redirects")
 				}
-				if req.URL.Scheme != "https" || !strings.EqualFold(req.URL.Host, "pay.ldxp.cn") {
+				if parsedBaseURL == nil ||
+					!strings.EqualFold(req.URL.Scheme, parsedBaseURL.Scheme) ||
+					!strings.EqualFold(req.URL.Host, parsedBaseURL.Host) {
 					return errors.New("redirect target is not allowed")
 				}
 				return nil
 			},
 		},
-		baseURL: liandongBaseURL,
+		baseURL:   baseURL,
+		configErr: configErr,
 	}
+}
+
+func liandongSOCKS5ProxyURL(
+	settingsSnapshot setting.LiandongPaymentSettings,
+) (*url.URL, error) {
+	normalized, err := setting.NormalizeLiandongSOCKS5ProxyURL(settingsSnapshot.ProxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if normalized == "" {
+		return nil, errors.New("SOCKS5 proxy URL is required when the proxy is enabled")
+	}
+	hasUsername := strings.TrimSpace(settingsSnapshot.ProxyUsername) != ""
+	hasPassword := settingsSnapshot.ProxyPassword != ""
+	if hasUsername != hasPassword {
+		return nil, errors.New("SOCKS5 proxy username and password must be configured together")
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return nil, errors.New("invalid SOCKS5 proxy URL")
+	}
+	if hasUsername {
+		parsed.User = url.UserPassword(
+			strings.TrimSpace(settingsSnapshot.ProxyUsername),
+			settingsSnapshot.ProxyPassword,
+		)
+	}
+	return parsed, nil
 }
 
 func (c *liandongClient) createOrder(
@@ -287,7 +351,7 @@ func (c *liandongClient) createOrder(
 			err: responseErr,
 		}
 	}
-	tradeNo, err := parseLiandongCreateTradeNo(responseBody)
+	tradeNo, err := parseLiandongCreateTradeNoForBaseURL(responseBody, c.baseURL)
 	if err != nil {
 		var rejection *liandongProviderRejection
 		return "", &liandongCreateError{
@@ -490,13 +554,20 @@ func (c *liandongClient) doJSON(
 	body []byte,
 	merchantToken string,
 ) (int, []byte, error) {
+	if c.configErr != nil {
+		return 0, nil, c.configErr
+	}
 	if path != liandongCreatePath &&
 		path != liandongOrderListPath &&
 		path != liandongGoodsListPath &&
 		path != liandongLoginPath {
 		return 0, nil, errors.New("provider path is not allowed")
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(body))
+	endpoint, err := liandongEndpointURL(c.baseURL, path)
+	if err != nil {
+		return 0, nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -557,6 +628,13 @@ func invalidLiandongJSONResponse(kind string, body []byte) error {
 }
 
 func parseLiandongCreateTradeNo(body []byte) (string, error) {
+	return parseLiandongCreateTradeNoForBaseURL(body, setting.DefaultLiandongBaseURL)
+}
+
+func parseLiandongCreateTradeNoForBaseURL(
+	body []byte,
+	baseURL string,
+) (string, error) {
 	var payload liandongCreateResponse
 	body = normalizeLiandongJSONBody(body)
 	if err := common.Unmarshal(body, &payload); err != nil {
@@ -629,14 +707,33 @@ func parseLiandongCreateTradeNo(body []byte) (string, error) {
 	if err != nil {
 		return "", errors.New("provider payment URL is invalid")
 	}
+	configuredPaymentURL, err := liandongEndpointURL(baseURL, liandongPaymentPath)
+	if err != nil {
+		return "", err
+	}
+	configuredPayment, err := url.Parse(configuredPaymentURL)
+	if err != nil {
+		return "", err
+	}
+	officialPayment, err := url.Parse(
+		setting.DefaultLiandongBaseURL + liandongPaymentPath,
+	)
+	if err != nil {
+		return "", err
+	}
 	if parsed.IsAbs() {
-		if parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "pay.ldxp.cn") {
+		matchesConfiguredOrigin := strings.EqualFold(parsed.Scheme, configuredPayment.Scheme) &&
+			strings.EqualFold(parsed.Host, configuredPayment.Host)
+		matchesOfficialOrigin := strings.EqualFold(parsed.Scheme, officialPayment.Scheme) &&
+			strings.EqualFold(parsed.Host, officialPayment.Host)
+		if !matchesConfiguredOrigin && !matchesOfficialOrigin {
 			return "", errors.New("provider payment URL host is invalid")
 		}
 	} else if parsed.Host != "" || parsed.Scheme != "" {
 		return "", errors.New("provider payment URL host is invalid")
 	}
-	if parsed.Path != liandongPaymentPath {
+	if parsed.Path != liandongPaymentPath &&
+		parsed.Path != configuredPayment.Path {
 		return "", errors.New("provider payment URL path is invalid")
 	}
 	tradeNos := parsed.Query()["trade_no"]
@@ -882,6 +979,8 @@ func ListLiandongProviderGoods(
 				settingsSnapshot.Password,
 				settingsSnapshot.MerchantToken,
 				tokenUsed,
+				settingsSnapshot.ProxyUsername,
+				settingsSnapshot.ProxyPassword,
 			),
 		)
 	}
@@ -898,6 +997,8 @@ func ListLiandongProviderGoods(
 				settingsSnapshot.Password,
 				settingsSnapshot.MerchantToken,
 				tokenUsed,
+				settingsSnapshot.ProxyUsername,
+				settingsSnapshot.ProxyPassword,
 			),
 		)
 	}
@@ -1000,10 +1101,37 @@ func parseLiandongOrderStatus(raw json.RawMessage) (int, error) {
 }
 
 func LiandongPaymentURL(providerTradeNo string) string {
+	return liandongPaymentURL(setting.DefaultLiandongBaseURL, providerTradeNo)
+}
+
+func liandongPaymentURL(baseURL string, providerTradeNo string) string {
 	if !liandongTradeNoPattern.MatchString(providerTradeNo) {
 		return ""
 	}
-	return liandongBaseURL + liandongPaymentPath + "?trade_no=" + url.QueryEscape(providerTradeNo)
+	normalizedBaseURL, err := setting.NormalizeLiandongBaseURL(baseURL)
+	if err != nil {
+		return ""
+	}
+	endpoint, err := liandongEndpointURL(normalizedBaseURL, liandongPaymentPath)
+	if err != nil {
+		return ""
+	}
+	return endpoint + "?trade_no=" + url.QueryEscape(providerTradeNo)
+}
+
+func liandongEndpointURL(baseURL string, path string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.Host == "" ||
+		parsed.User != nil ||
+		parsed.RawQuery != "" ||
+		parsed.Fragment != "" {
+		return "", errors.New("card marketplace base URL is invalid")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + path
+	parsed.RawPath = ""
+	return parsed.String(), nil
 }
 
 func sanitizeLiandongDiagnostic(message string, secrets ...string) string {
@@ -1075,6 +1203,8 @@ func SanitizeLiandongOrderDiagnostic(
 		settingsSnapshot.Username,
 		settingsSnapshot.Password,
 		settingsSnapshot.MerchantToken,
+		settingsSnapshot.ProxyUsername,
+		settingsSnapshot.ProxyPassword,
 	)
 }
 
@@ -1106,7 +1236,10 @@ func LiandongOrderView(order *model.LiandongOrder) LiandongPaymentView {
 		(order.PaymentStatus == model.LiandongPaymentStatusPending ||
 			order.PaymentStatus == model.LiandongPaymentStatusCreateUnknown) &&
 		order.ProviderTradeNo != nil {
-		view.PaymentURL = LiandongPaymentURL(*order.ProviderTradeNo)
+		view.PaymentURL = liandongPaymentURL(
+			settingsSnapshot.BaseURL,
+			*order.ProviderTradeNo,
+		)
 	}
 	return view
 }
@@ -1282,6 +1415,8 @@ func createLiandongPayment(
 			order.JUUIDSnapshot,
 			settingsSnapshot.JUUID,
 			settingsSnapshot.MerchantToken,
+			settingsSnapshot.ProxyUsername,
+			settingsSnapshot.ProxyPassword,
 		)
 		if diagnostic == "" {
 			diagnostic = "liandong provider returned no diagnostic information"
@@ -1365,6 +1500,8 @@ func closeLiandongOrderAfterVerification(
 			settingsSnapshot.Username,
 			settingsSnapshot.Password,
 			settingsSnapshot.MerchantToken,
+			settingsSnapshot.ProxyUsername,
+			settingsSnapshot.ProxyPassword,
 		)
 		if diagnostic == "" {
 			diagnostic = "liandong provider returned no diagnostic information"
@@ -1495,6 +1632,8 @@ func RefreshLiandongPaymentForUser(
 			settingsSnapshot.Username,
 			settingsSnapshot.Password,
 			settingsSnapshot.MerchantToken,
+			settingsSnapshot.ProxyUsername,
+			settingsSnapshot.ProxyPassword,
 		)
 		if diagnostic == "" {
 			diagnostic = "liandong provider returned no diagnostic information"
@@ -1667,6 +1806,8 @@ func CloseLiandongPaymentForRoot(
 			settingsSnapshot.Username,
 			settingsSnapshot.Password,
 			settingsSnapshot.MerchantToken,
+			settingsSnapshot.ProxyUsername,
+			settingsSnapshot.ProxyPassword,
 		)
 		if diagnostic == "" {
 			diagnostic = "liandong payment verification failed"
@@ -1935,6 +2076,8 @@ func reconcilePendingLiandongOrders(
 			settingsSnapshot.Password,
 			settingsSnapshot.MerchantToken,
 			tokenUsed,
+			settingsSnapshot.ProxyUsername,
+			settingsSnapshot.ProxyPassword,
 		)
 		if diagnostic == "" {
 			diagnostic = "liandong provider returned no diagnostic information"

@@ -240,6 +240,11 @@ type liandongSettingsUpdateRequest struct {
 	ReconcileEnabled          *bool   `json:"reconcile_enabled"`
 	FulfillEnabled            *bool   `json:"fulfill_enabled"`
 	IframeEnabled             *bool   `json:"iframe_enabled"`
+	BaseURL                   *string `json:"base_url"`
+	ProxyEnabled              *bool   `json:"proxy_enabled"`
+	ProxyURL                  *string `json:"proxy_url"`
+	ProxyUsername             *string `json:"proxy_username"`
+	ProxyPassword             *string `json:"proxy_password"`
 	PollIntervalSeconds       *int    `json:"poll_interval_seconds"`
 	ClientPollIntervalSeconds *int    `json:"client_poll_interval_seconds"`
 	ReconcileBatchSize        *int    `json:"reconcile_batch_size"`
@@ -252,6 +257,8 @@ type liandongSettingsUpdateRequest struct {
 	ClearUsername             bool    `json:"clear_username"`
 	ClearPassword             bool    `json:"clear_password"`
 	ClearToken                bool    `json:"clear_token"`
+	ClearProxyUsername        bool    `json:"clear_proxy_username"`
+	ClearProxyPassword        bool    `json:"clear_proxy_password"`
 }
 
 func GetLiandongSettings(c *gin.Context) {
@@ -266,6 +273,11 @@ func GetLiandongSettings(c *gin.Context) {
 		"reconcile_enabled":            settingsSnapshot.ReconcileEnabled,
 		"fulfill_enabled":              settingsSnapshot.FulfillEnabled,
 		"iframe_enabled":               settingsSnapshot.IframeEnabled,
+		"base_url":                     settingsSnapshot.BaseURL,
+		"proxy_enabled":                settingsSnapshot.ProxyEnabled,
+		"proxy_url":                    settingsSnapshot.ProxyURL,
+		"proxy_username_configured":    strings.TrimSpace(settingsSnapshot.ProxyUsername) != "",
+		"proxy_password_configured":    settingsSnapshot.ProxyPassword != "",
 		"poll_interval_seconds":        settingsSnapshot.PollIntervalSeconds,
 		"client_poll_interval_seconds": settingsSnapshot.ClientPollIntervalSeconds,
 		"reconcile_batch_size":         settingsSnapshot.ReconcileBatchSize,
@@ -319,6 +331,56 @@ func UpdateLiandongSettings(c *gin.Context) {
 	setBool("LiandongReconcileEnabled", req.ReconcileEnabled, &updated.ReconcileEnabled)
 	setBool("LiandongFulfillEnabled", req.FulfillEnabled, &updated.FulfillEnabled)
 	setBool("LiandongIframeEnabled", req.IframeEnabled, &updated.IframeEnabled)
+	setBool("LiandongProxyEnabled", req.ProxyEnabled, &updated.ProxyEnabled)
+
+	if req.BaseURL != nil {
+		normalized, err := setting.NormalizeLiandongBaseURL(*req.BaseURL)
+		if err != nil {
+			common.ApiErrorMsg(c, err.Error())
+			return
+		}
+		updated.BaseURL = normalized
+		values["LiandongBaseURL"] = normalized
+	}
+	if req.ProxyURL != nil {
+		normalized, err := setting.NormalizeLiandongSOCKS5ProxyURL(*req.ProxyURL)
+		if err != nil {
+			common.ApiErrorMsg(c, err.Error())
+			return
+		}
+		updated.ProxyURL = normalized
+		values["LiandongProxyURL"] = normalized
+	}
+
+	proxyCredentialsChanged := false
+	if req.ClearProxyUsername {
+		updated.ProxyUsername = ""
+		values["LiandongProxyUsername"] = ""
+		proxyCredentialsChanged = true
+	} else if req.ProxyUsername != nil {
+		username := strings.TrimSpace(*req.ProxyUsername)
+		if username == "" || len(username) > 128 {
+			common.ApiErrorMsg(c, "Invalid SOCKS5 proxy username")
+			return
+		}
+		updated.ProxyUsername = username
+		values["LiandongProxyUsername"] = username
+		proxyCredentialsChanged = true
+	}
+	if req.ClearProxyPassword {
+		updated.ProxyPassword = ""
+		values["LiandongProxyPassword"] = ""
+		proxyCredentialsChanged = true
+	} else if req.ProxyPassword != nil {
+		password := *req.ProxyPassword
+		if password == "" || len(password) > 256 {
+			common.ApiErrorMsg(c, "Invalid SOCKS5 proxy password")
+			return
+		}
+		updated.ProxyPassword = password
+		values["LiandongProxyPassword"] = password
+		proxyCredentialsChanged = true
+	}
 
 	if req.PollIntervalSeconds != nil {
 		if *req.PollIntervalSeconds < setting.MinLiandongPollIntervalSeconds ||
@@ -461,6 +523,18 @@ func UpdateLiandongSettings(c *gin.Context) {
 			return
 		}
 	}
+	if updated.ProxyEnabled {
+		if updated.ProxyURL == "" {
+			common.ApiErrorMsg(c, "SOCKS5 proxy URL is required when the proxy is enabled")
+			return
+		}
+		hasProxyUsername := strings.TrimSpace(updated.ProxyUsername) != ""
+		hasProxyPassword := updated.ProxyPassword != ""
+		if hasProxyUsername != hasProxyPassword {
+			common.ApiErrorMsg(c, "SOCKS5 proxy username and password must be configured together")
+			return
+		}
+	}
 	if len(values) > 0 {
 		if err := model.UpdateOptionsBulk(values); err != nil {
 			common.ApiError(c, err)
@@ -472,16 +546,19 @@ func UpdateLiandongSettings(c *gin.Context) {
 	for key := range values {
 		if key == "LiandongMerchantToken" ||
 			key == "LiandongUsername" ||
-			key == "LiandongPassword" {
+			key == "LiandongPassword" ||
+			key == "LiandongProxyUsername" ||
+			key == "LiandongProxyPassword" {
 			continue
 		}
 		updatedKeys = append(updatedKeys, key)
 	}
 	sort.Strings(updatedKeys)
 	recordManageAudit(c, "liandong.settings.update", map[string]interface{}{
-		"updated_keys":        updatedKeys,
-		"credentials_changed": credentialsChanged,
-		"token_changed":       tokenChanged,
+		"updated_keys":              updatedKeys,
+		"credentials_changed":       credentialsChanged,
+		"token_changed":             tokenChanged,
+		"proxy_credentials_changed": proxyCredentialsChanged,
 	})
 	service.WakeSystemTaskRunner()
 	common.ApiSuccess(c, nil)

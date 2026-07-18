@@ -155,6 +155,11 @@ func TestGetLiandongSettingsNeverReturnsMerchantToken(t *testing.T) {
 	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
 		"LiandongMerchantToken": "super-secret-token",
 		"LiandongJUUID":         "merchant-id",
+		"LiandongBaseURL":       "https://gateway.example.com/card",
+		"LiandongProxyEnabled":  "true",
+		"LiandongProxyURL":      "socks5h://127.0.0.1:1080",
+		"LiandongProxyUsername": "secret-proxy-user",
+		"LiandongProxyPassword": "secret-proxy-password",
 	}))
 
 	recorder := httptest.NewRecorder()
@@ -165,7 +170,14 @@ func TestGetLiandongSettingsNeverReturnsMerchantToken(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.NotContains(t, recorder.Body.String(), "super-secret-token")
+	assert.NotContains(t, recorder.Body.String(), "secret-proxy-user")
+	assert.NotContains(t, recorder.Body.String(), "secret-proxy-password")
 	assert.Contains(t, recorder.Body.String(), `"merchant_token_configured":true`)
+	assert.Contains(t, recorder.Body.String(), `"base_url":"https://gateway.example.com/card"`)
+	assert.Contains(t, recorder.Body.String(), `"proxy_enabled":true`)
+	assert.Contains(t, recorder.Body.String(), `"proxy_url":"socks5h://127.0.0.1:1080"`)
+	assert.Contains(t, recorder.Body.String(), `"proxy_username_configured":true`)
+	assert.Contains(t, recorder.Body.String(), `"proxy_password_configured":true`)
 }
 
 func TestGetTopUpInfoReportsLiandongMasterSwitch(t *testing.T) {
@@ -354,6 +366,38 @@ func TestUpdateLiandongSettingsStoresIndependentPollingIntervals(t *testing.T) {
 	assert.Equal(t, 1, settingsSnapshot.PollIntervalSeconds)
 	assert.Equal(t, 7, settingsSnapshot.ClientPollIntervalSeconds)
 	assert.NotContains(t, recorder.Body.String(), "merchant_token")
+}
+
+func TestUpdateLiandongSettingsStoresBaseURLAndSOCKS5Proxy(t *testing.T) {
+	setupLiandongControllerTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(
+		http.MethodPut,
+		"/api/option/liandong",
+		strings.NewReader(`{
+			"base_url":"https://gateway.example.com/card/",
+			"proxy_enabled":true,
+			"proxy_url":"socks5h://127.0.0.1:1080/",
+			"proxy_username":"proxy-user",
+			"proxy_password":"proxy-password"
+		}`),
+	)
+	context.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateLiandongSettings(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
+	require.NoError(t, err)
+	assert.Equal(t, "https://gateway.example.com/card", settingsSnapshot.BaseURL)
+	assert.True(t, settingsSnapshot.ProxyEnabled)
+	assert.Equal(t, "socks5h://127.0.0.1:1080", settingsSnapshot.ProxyURL)
+	assert.Equal(t, "proxy-user", settingsSnapshot.ProxyUsername)
+	assert.Equal(t, "proxy-password", settingsSnapshot.ProxyPassword)
+	assert.NotContains(t, recorder.Body.String(), "proxy-user")
+	assert.NotContains(t, recorder.Body.String(), "proxy-password")
 }
 
 func TestUpdateLiandongSettingsRequiresNewManualTokenWhenLeavingCredentialsMode(t *testing.T) {

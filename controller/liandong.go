@@ -248,6 +248,7 @@ type liandongSettingsUpdateRequest struct {
 	ProxyURL                  *string `json:"proxy_url"`
 	ProxyUsername             *string `json:"proxy_username"`
 	ProxyPassword             *string `json:"proxy_password"`
+	ProxyTimeoutSeconds       *int    `json:"proxy_timeout_seconds"`
 	PollIntervalSeconds       *int    `json:"poll_interval_seconds"`
 	ClientPollIntervalSeconds *int    `json:"client_poll_interval_seconds"`
 	ReconcileBatchSize        *int    `json:"reconcile_batch_size"`
@@ -293,6 +294,7 @@ func GetLiandongSettings(c *gin.Context) {
 		"proxy_url":                    proxyURL,
 		"proxy_username_configured":    strings.TrimSpace(settingsSnapshot.ProxyUsername) != "",
 		"proxy_password_configured":    settingsSnapshot.ProxyPassword != "",
+		"proxy_timeout_seconds":        settingsSnapshot.ProxyTimeoutSeconds,
 		"poll_interval_seconds":        settingsSnapshot.PollIntervalSeconds,
 		"client_poll_interval_seconds": settingsSnapshot.ClientPollIntervalSeconds,
 		"reconcile_batch_size":         settingsSnapshot.ReconcileBatchSize,
@@ -418,6 +420,16 @@ func UpdateLiandongSettings(c *gin.Context) {
 		updated.ProxyPassword = password
 		values["LiandongProxyPassword"] = password
 		proxyCredentialsChanged = true
+	}
+
+	if req.ProxyTimeoutSeconds != nil {
+		if *req.ProxyTimeoutSeconds < setting.MinLiandongProxyTimeoutSeconds ||
+			*req.ProxyTimeoutSeconds > setting.MaxLiandongProxyTimeoutSeconds {
+			common.ApiErrorMsg(c, "Proxy timeout must be between 5 and 300 seconds")
+			return
+		}
+		updated.ProxyTimeoutSeconds = *req.ProxyTimeoutSeconds
+		values["LiandongProxyTimeoutSeconds"] = strconv.Itoa(*req.ProxyTimeoutSeconds)
 	}
 
 	if req.PollIntervalSeconds != nil {
@@ -579,6 +591,7 @@ func UpdateLiandongSettings(c *gin.Context) {
 		req.BaseURL != nil ||
 		req.ProxyEnabled != nil ||
 		req.ProxyURL != nil ||
+		req.ProxyTimeoutSeconds != nil ||
 		proxyCredentialsChanged
 	if !emergencyDisable && !disablingProxy && updated.ProxyURL != "" && proxyConfigurationChanged {
 		if err := liandongProxyValidator(c.Request.Context(), updated); err != nil {

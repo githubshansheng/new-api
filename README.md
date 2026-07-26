@@ -145,7 +145,7 @@ chmod +x new-api.sh
 
 | Command | Description |
 |------|------|
-| `build` | Install Bun dependencies, build the default and classic frontends, and build the Go binary with embedded frontend assets |
+| `build` | Install Bun dependencies, build the frontend, and build the Go binary with embedded frontend assets |
 | `start` | Start the service; automatically build it first when the binary is missing |
 | `stop` | Stop the managed background service |
 | `restart` | Restart the service without rebuilding |

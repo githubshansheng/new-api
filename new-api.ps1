@@ -269,24 +269,14 @@ function Build-App {
         Pop-Location
     }
 
-    Write-Step "Building default frontend"
-    Push-Location (Join-Path $RootDir "web/default")
+    Write-Step "Building frontend"
+    Push-Location (Join-Path $RootDir "web")
     try {
         $env:DISABLE_ESLINT_PLUGIN = "true"
         $env:VITE_REACT_APP_VERSION = $version
-        Invoke-Native { bun run build } "Default frontend build failed"
+        Invoke-Native { bun run build } "Frontend build failed"
     } finally {
         Remove-Item Env:DISABLE_ESLINT_PLUGIN -ErrorAction SilentlyContinue
-        Remove-Item Env:VITE_REACT_APP_VERSION -ErrorAction SilentlyContinue
-        Pop-Location
-    }
-
-    Write-Step "Building classic frontend"
-    Push-Location (Join-Path $RootDir "web/classic")
-    try {
-        $env:VITE_REACT_APP_VERSION = $version
-        Invoke-Native { bun run build } "Classic frontend build failed"
-    } finally {
         Remove-Item Env:VITE_REACT_APP_VERSION -ErrorAction SilentlyContinue
         Pop-Location
     }
@@ -418,7 +408,7 @@ Examples:
   .\new-api.cmd logs
 
 Commands:
-  build     Build both frontends and the Go binary.
+  build     Build the frontend and the Go binary.
   start     Start the existing binary; build first when it is missing.
   stop      Stop the managed background process.
   restart   Restart without rebuilding.

@@ -272,20 +272,11 @@ if (-not $SkipFrontendBuild) {
         $env:VITE_REACT_APP_VERSION = $PatchId
         if ($BunCommand) {
             Invoke-Checked bun @("run", "build") `
-                (Join-Path $RepositoryRoot "web\default")
+                (Join-Path $RepositoryRoot "web")
         }
         else {
             Invoke-Checked $RsbuildCommand @("build") `
-                (Join-Path $RepositoryRoot "web\default")
-        }
-        $env:DISABLE_ESLINT_PLUGIN = $savedDisableEslint
-        if ($BunCommand) {
-            Invoke-Checked bun @("run", "build") `
-                (Join-Path $RepositoryRoot "web\classic")
-        }
-        else {
-            Invoke-Checked $RsbuildCommand @("build") `
-                (Join-Path $RepositoryRoot "web\classic")
+                (Join-Path $RepositoryRoot "web")
         }
     }
     finally {

@@ -1,6 +1,6 @@
 # Files that are required to reproduce the production binaries even though
 # broader dependency-manifest exclusions exist.
-web/classic/package.json
+web/package.json
 web/bun.lock
 
 # Linux service management is part of this production Patch.

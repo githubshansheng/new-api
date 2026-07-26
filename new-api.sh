@@ -291,16 +291,10 @@ build_app() {
     bun install --frozen-lockfile
   )
 
-  log_step "Building default frontend"
+  log_step "Building frontend"
   (
-    cd "${ROOT_DIR}/web/default"
+    cd "${ROOT_DIR}/web"
     DISABLE_ESLINT_PLUGIN=true VITE_REACT_APP_VERSION="${version}" bun run build
-  )
-
-  log_step "Building classic frontend"
-  (
-    cd "${ROOT_DIR}/web/classic"
-    VITE_REACT_APP_VERSION="${version}" bun run build
   )
 
   log_step "Building backend with embedded frontend assets"
@@ -508,7 +502,7 @@ Examples:
   ./new-api.sh logs
 
 Commands:
-  build     Build both frontends and the Go binary.
+  build     Build the frontend and the Go binary.
   start     Start the existing binary; build first when it is missing.
   stop      Gracefully stop the managed background process.
   restart   Restart without rebuilding.

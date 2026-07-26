@@ -9,8 +9,6 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
-	"github.com/gin-contrib/sessions"
-	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -24,10 +22,12 @@ func TestLiandongUserRoutesRequireAuthenticationAndManagementRequiresRoot(t *tes
 	originalLogDB := model.LOG_DB
 	originalMainDatabaseType := common.MainDatabaseType()
 	originalLogDatabaseType := common.LogDatabaseType()
+	originalRedisEnabled := common.RedisEnabled
 	t.Cleanup(func() {
 		model.DB = originalDB
 		model.LOG_DB = originalLogDB
 		common.SetDatabaseTypes(originalMainDatabaseType, originalLogDatabaseType)
+		common.RedisEnabled = originalRedisEnabled
 	})
 
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
@@ -36,8 +36,10 @@ func TestLiandongUserRoutesRequireAuthenticationAndManagementRequiresRoot(t *tes
 	model.DB = db
 	model.LOG_DB = db
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	common.RedisEnabled = false
 	require.NoError(t, db.AutoMigrate(
 		&model.Option{},
+		&model.User{},
 		&model.LiandongProduct{},
 		&model.LiandongProductThumbnail{},
 	))
@@ -59,26 +61,28 @@ func TestLiandongUserRoutesRequireAuthenticationAndManagementRequiresRoot(t *tes
 		Version:     123,
 	}).Error)
 
+	adminToken := "liandong-router-admin-token"
+	rootToken := "liandong-router-root-token"
+	require.NoError(t, db.Create(&model.User{
+		Username:    "liandong-router-admin",
+		Password:    "password",
+		Status:      common.UserStatusEnabled,
+		Role:        common.RoleAdminUser,
+		Group:       "default",
+		AffCode:     "LDROUTERADMIN",
+		AccessToken: &adminToken,
+	}).Error)
+	require.NoError(t, db.Create(&model.User{
+		Username:    "liandong-router-root",
+		Password:    "password",
+		Status:      common.UserStatusEnabled,
+		Role:        common.RoleRootUser,
+		Group:       "default",
+		AffCode:     "LDROUTERROOT",
+		AccessToken: &rootToken,
+	}).Error)
+
 	engine := gin.New()
-	engine.Use(sessions.Sessions("session", cookie.NewStore([]byte("liandong-router-test"))))
-	engine.GET("/test/liandong-session/:role", func(c *gin.Context) {
-		role := common.RoleAdminUser
-		id := 42
-		username := "admin"
-		if c.Param("role") == "root" {
-			role = common.RoleRootUser
-			id = 1
-			username = "root"
-		}
-		session := sessions.Default(c)
-		session.Set("username", username)
-		session.Set("role", role)
-		session.Set("id", id)
-		session.Set("status", common.UserStatusEnabled)
-		session.Set("group", "default")
-		require.NoError(t, session.Save())
-		c.Status(http.StatusNoContent)
-	})
 	SetApiRouter(engine)
 
 	thumbnailRecorder := httptest.NewRecorder()
@@ -104,15 +108,6 @@ func TestLiandongUserRoutesRequireAuthenticationAndManagementRequiresRoot(t *tes
 	)
 	assert.Equal(t, http.StatusUnauthorized, rootRecorder.Code)
 
-	adminLoginRecorder := httptest.NewRecorder()
-	engine.ServeHTTP(
-		adminLoginRecorder,
-		httptest.NewRequest(http.MethodGet, "/test/liandong-session/admin", nil),
-	)
-	require.Equal(t, http.StatusNoContent, adminLoginRecorder.Code)
-	adminCookie := strings.Split(adminLoginRecorder.Header().Get("Set-Cookie"), ";")[0]
-	require.NotEmpty(t, adminCookie)
-
 	rootRoutes := []struct {
 		method string
 		path   string
@@ -135,31 +130,20 @@ func TestLiandongUserRoutesRequireAuthenticationAndManagementRequiresRoot(t *tes
 	}
 	for _, route := range rootRoutes {
 		request := httptest.NewRequest(route.method, route.path, strings.NewReader(`{}`))
-		request.Header.Set("Cookie", adminCookie)
-		request.Header.Set("New-Api-User", "42")
+		request.Header.Set("Authorization", "Bearer "+adminToken)
 		request.Header.Set("Accept-Language", "en")
 		request.Header.Set("Content-Type", "application/json")
 		recorder := httptest.NewRecorder()
 
 		engine.ServeHTTP(recorder, request)
 
-		assert.Equal(t, http.StatusOK, recorder.Code, "%s %s", route.method, route.path)
-		assert.Contains(t, recorder.Body.String(), `"message":"auth.insufficient_privilege"`, "%s %s", route.method, route.path)
+		assert.Equal(t, http.StatusForbidden, recorder.Code, "%s %s", route.method, route.path)
+		assert.Contains(t, recorder.Body.String(), `"code":"AUTH_INSUFFICIENT_PRIVILEGE"`, "%s %s", route.method, route.path)
 	}
-
-	rootLoginRecorder := httptest.NewRecorder()
-	engine.ServeHTTP(
-		rootLoginRecorder,
-		httptest.NewRequest(http.MethodGet, "/test/liandong-session/root", nil),
-	)
-	require.Equal(t, http.StatusNoContent, rootLoginRecorder.Code)
-	rootCookie := strings.Split(rootLoginRecorder.Header().Get("Set-Cookie"), ";")[0]
-	require.NotEmpty(t, rootCookie)
 
 	for _, path := range []string{"/api/option/liandong", "/api/option/liandong/products"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
-		request.Header.Set("Cookie", rootCookie)
-		request.Header.Set("New-Api-User", "1")
+		request.Header.Set("Authorization", "Bearer "+rootToken)
 		recorder := httptest.NewRecorder()
 
 		engine.ServeHTTP(recorder, request)

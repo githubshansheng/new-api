@@ -1691,7 +1691,9 @@ func FulfillLiandongOrder(localTradeNo string) (*LiandongFulfillmentResult, erro
 		)
 	}
 	if result.UpgradeGroup != "" {
-		_ = UpdateUserGroupCache(result.UserID, result.UpgradeGroup)
+		if err := RefreshUserGroupCache(result.UserID); err != nil {
+			common.SysError("failed to refresh user group cache after liandong fulfillment: " + err.Error())
+		}
 	}
 	if result.UserID > 0 && result.QuotaAdded == 0 {
 		RecordLog(

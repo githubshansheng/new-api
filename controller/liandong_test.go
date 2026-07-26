@@ -11,8 +11,6 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
-	"github.com/gin-contrib/sessions"
-	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -797,68 +795,54 @@ func TestLiandongPollHandlerStopsForExpiredProviderOrderWhenReconciliationDisabl
 	assert.False(t, (liandongPollHandler{}).Enabled())
 }
 
-func TestLiandongRootRoutesRejectAdminSession(t *testing.T) {
+func TestLiandongRootRoutesRejectAdminCredential(t *testing.T) {
+	setupLiandongControllerTestDB(t)
 	gin.SetMode(gin.TestMode)
+	accessToken := "liandong-admin-auth-test"
+	require.NoError(t, model.DB.Create(&model.User{
+		Username:    "liandong-admin",
+		Password:    "password",
+		Status:      common.UserStatusEnabled,
+		Role:        common.RoleAdminUser,
+		Group:       "default",
+		AffCode:     "LDAUTHADMIN",
+		AccessToken: &accessToken,
+	}).Error)
 	engine := gin.New()
-	engine.Use(sessions.Sessions("session", cookie.NewStore([]byte("liandong-auth-test"))))
-	engine.GET("/login", func(c *gin.Context) {
-		session := sessions.Default(c)
-		session.Set("username", "admin")
-		session.Set("role", common.RoleAdminUser)
-		session.Set("id", 42)
-		session.Set("status", common.UserStatusEnabled)
-		session.Set("group", "default")
-		require.NoError(t, session.Save())
-		c.Status(http.StatusNoContent)
-	})
 	handlerCalled := false
 	engine.GET("/root", middleware.RootAuth(), func(c *gin.Context) {
 		handlerCalled = true
 		c.Status(http.StatusNoContent)
 	})
 
-	loginRecorder := httptest.NewRecorder()
-	engine.ServeHTTP(loginRecorder, httptest.NewRequest(http.MethodGet, "/login", nil))
-	require.Equal(t, http.StatusNoContent, loginRecorder.Code)
-	cookieHeader := loginRecorder.Header().Get("Set-Cookie")
-	require.NotEmpty(t, cookieHeader)
-
 	request := httptest.NewRequest(http.MethodGet, "/root", nil)
-	request.Header.Set("Cookie", strings.Split(cookieHeader, ";")[0])
-	request.Header.Set("New-Api-User", "42")
+	request.Header.Set("Authorization", "Bearer "+accessToken)
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, request)
 
 	assert.False(t, handlerCalled)
-	assert.Contains(t, recorder.Body.String(), `"success":false`)
+	assert.Equal(t, http.StatusForbidden, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"code":"AUTH_INSUFFICIENT_PRIVILEGE"`)
 }
 
-func TestLiandongRootRouteAllowsRootSession(t *testing.T) {
+func TestLiandongRootRouteAllowsRootCredential(t *testing.T) {
 	setupLiandongControllerTestDB(t)
 	gin.SetMode(gin.TestMode)
+	accessToken := "liandong-root-auth-test"
+	require.NoError(t, model.DB.Create(&model.User{
+		Username:    "liandong-root",
+		Password:    "password",
+		Status:      common.UserStatusEnabled,
+		Role:        common.RoleRootUser,
+		Group:       "default",
+		AffCode:     "LDAUTHROOT",
+		AccessToken: &accessToken,
+	}).Error)
 	engine := gin.New()
-	engine.Use(sessions.Sessions("session", cookie.NewStore([]byte("liandong-root-auth-test"))))
-	engine.GET("/login", func(c *gin.Context) {
-		session := sessions.Default(c)
-		session.Set("username", "root")
-		session.Set("role", common.RoleRootUser)
-		session.Set("id", 1)
-		session.Set("status", common.UserStatusEnabled)
-		session.Set("group", "default")
-		require.NoError(t, session.Save())
-		c.Status(http.StatusNoContent)
-	})
 	engine.GET("/api/option/liandong", middleware.RootAuth(), GetLiandongSettings)
 
-	loginRecorder := httptest.NewRecorder()
-	engine.ServeHTTP(loginRecorder, httptest.NewRequest(http.MethodGet, "/login", nil))
-	require.Equal(t, http.StatusNoContent, loginRecorder.Code)
-	cookieHeader := loginRecorder.Header().Get("Set-Cookie")
-	require.NotEmpty(t, cookieHeader)
-
 	request := httptest.NewRequest(http.MethodGet, "/api/option/liandong", nil)
-	request.Header.Set("Cookie", strings.Split(cookieHeader, ";")[0])
-	request.Header.Set("New-Api-User", "1")
+	request.Header.Set("Authorization", "Bearer "+accessToken)
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, request)
 

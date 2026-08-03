@@ -387,6 +387,124 @@ func TestNewLiandongClientUsesDedicatedHTTPProxies(t *testing.T) {
 	}
 }
 
+func TestLiandongClientsPreserveAllProviderCookies(t *testing.T) {
+	receivedCookies := make(chan map[string]string, 2)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookies := make(map[string]string)
+		for _, cookie := range r.Cookies() {
+			cookies[cookie.Name] = cookie.Value
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case liandongLoginPath:
+			for name, value := range map[string]string{
+				"cdn_sec_tc":             "security-cookie",
+				"acw_sc__v2":             "challenge-cookie",
+				"PHPSESSID":              "session-cookie",
+				"provider_future_cookie": "future-cookie",
+			} {
+				http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/"})
+			}
+			_, _ = w.Write([]byte(`{"merchant_token":"fresh-token"}`))
+		case liandongOrderListPath:
+			receivedCookies <- cookies
+			http.SetCookie(w, &http.Cookie{Name: "cdn_sec_tc", Value: "updated-cookie", Path: "/"})
+			http.SetCookie(w, &http.Cookie{Name: "provider_future_cookie", Path: "/", MaxAge: -1})
+			_, _ = w.Write([]byte(`{"list":[]}`))
+		case liandongGoodsListPath:
+			receivedCookies <- cookies
+			_, _ = w.Write([]byte(`{"list":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	settingsSnapshot := setting.LiandongPaymentSettings{BaseURL: server.URL}
+	loginClient := newLiandongClientWithSettings(settingsSnapshot)
+	loginClient.httpClient.Transport = server.Client().Transport
+	statusCode, _, err := loginClient.doJSON(
+		context.Background(),
+		http.MethodPost,
+		liandongLoginPath,
+		[]byte(`{}`),
+		"",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, statusCode)
+
+	requestClient := newLiandongClientWithSettings(settingsSnapshot)
+	requestClient.httpClient.Transport = server.Client().Transport
+	_, _, err = requestClient.doJSON(
+		context.Background(),
+		http.MethodPost,
+		liandongOrderListPath,
+		[]byte(`{}`),
+		"fresh-token",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"cdn_sec_tc":             "security-cookie",
+		"acw_sc__v2":             "challenge-cookie",
+		"PHPSESSID":              "session-cookie",
+		"provider_future_cookie": "future-cookie",
+	}, <-receivedCookies)
+
+	_, _, err = requestClient.doJSON(
+		context.Background(),
+		http.MethodPost,
+		liandongGoodsListPath,
+		[]byte(`{}`),
+		"fresh-token",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"cdn_sec_tc": "updated-cookie",
+		"acw_sc__v2": "challenge-cookie",
+		"PHPSESSID":  "session-cookie",
+	}, <-receivedCookies)
+}
+
+func TestLiandongClientsDoNotShareCookiesAcrossBaseURLs(t *testing.T) {
+	firstServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "PHPSESSID", Value: "first-session", Path: "/"})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"merchant_token":"fresh-token"}`))
+	}))
+	defer firstServer.Close()
+
+	secondCookies := make(chan []*http.Cookie, 1)
+	secondServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCookies <- r.Cookies()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"list":[]}`))
+	}))
+	defer secondServer.Close()
+
+	firstClient := newLiandongClientWithSettings(setting.LiandongPaymentSettings{BaseURL: firstServer.URL})
+	firstClient.httpClient.Transport = firstServer.Client().Transport
+	_, _, err := firstClient.doJSON(
+		context.Background(),
+		http.MethodPost,
+		liandongLoginPath,
+		[]byte(`{}`),
+		"",
+	)
+	require.NoError(t, err)
+
+	secondClient := newLiandongClientWithSettings(setting.LiandongPaymentSettings{BaseURL: secondServer.URL})
+	secondClient.httpClient.Transport = secondServer.Client().Transport
+	_, _, err = secondClient.doJSON(
+		context.Background(),
+		http.MethodPost,
+		liandongGoodsListPath,
+		[]byte(`{}`),
+		"fresh-token",
+	)
+	require.NoError(t, err)
+	assert.Empty(t, <-secondCookies)
+}
+
 func TestLiandongMerchantTokenOnlySentToOrderList(t *testing.T) {
 	type capturedRequest struct {
 		path  string
@@ -436,6 +554,46 @@ func TestLiandongMerchantTokenOnlySentToOrderList(t *testing.T) {
 	assert.Empty(t, createRequest.token)
 	assert.Equal(t, liandongOrderListPath, queryRequest.path)
 	assert.Equal(t, "secret-token", queryRequest.token)
+}
+
+func TestLiandongPaymentProbeRequestsCurrentQRCodePageWithMerchantToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, liandongPaymentPath, r.URL.Path)
+		assert.Equal(t, "TRADE123", r.URL.Query().Get("trade_no"))
+		assert.Equal(t, "secret-token", r.Header.Get("merchant-token"))
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<!doctype html><html><body>payment QR</body></html>"))
+	}))
+	defer server.Close()
+
+	client := &liandongClient{httpClient: server.Client(), baseURL: server.URL}
+	require.NoError(t, client.probePaymentPage(
+		context.Background(),
+		"TRADE123",
+		setting.LiandongPaymentSettings{
+			AuthMode:      setting.LiandongAuthModeManualToken,
+			MerchantToken: "secret-token",
+		},
+	))
+}
+
+func TestLiandongPaymentProbeRejectsBrowserVerificationPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><script>var arg1='challenge';</script></html>"))
+	}))
+	defer server.Close()
+
+	client := &liandongClient{httpClient: server.Client(), baseURL: server.URL}
+	err := client.probePaymentPage(
+		context.Background(),
+		"TRADE123",
+		setting.LiandongPaymentSettings{
+			AuthMode:      setting.LiandongAuthModeManualToken,
+			MerchantToken: "secret-token",
+		},
+	)
+	require.ErrorContains(t, err, "browser verification page")
 }
 
 func TestCreateLiandongPaymentRejectsUnavailableInventoryBeforeProviderRequest(t *testing.T) {
@@ -877,6 +1035,79 @@ func TestLiandongCredentialAuthRefreshesOnUnauthorizedAndRetriesOnce(t *testing.
 			assert.Equal(t, "fresh-token", refreshedSettings.MerchantToken)
 		})
 	}
+}
+
+func TestLiandongOrderQueryFailureReloginsAndUsesRefreshedCookies(t *testing.T) {
+	resetLiandongServiceFixtures(t)
+
+	var orderRequests atomic.Int32
+	var loginRequests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case liandongOrderListPath:
+			requestNumber := orderRequests.Add(1)
+			if requestNumber == 1 {
+				http.SetCookie(w, &http.Cookie{Name: "cdn_sec_tc", Value: "challenge-cookie", Path: "/"})
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = w.Write([]byte(`<html><script>var arg1='challenge';</script></html>`))
+				return
+			}
+			assert.Equal(t, "fresh-token", r.Header.Get("merchant-token"))
+			for name, expected := range map[string]string{
+				"cdn_sec_tc": "fresh-security-cookie",
+				"acw_sc__v2": "fresh-challenge-cookie",
+				"PHPSESSID":  "fresh-session-cookie",
+			} {
+				cookie, err := r.Cookie(name)
+				require.NoError(t, err)
+				assert.Equal(t, expected, cookie.Value)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"list":[{"trade_no":"TRADE-COOKIE-001","status":2}]}`))
+		case liandongLoginPath:
+			loginRequests.Add(1)
+			challengeCookie, err := r.Cookie("cdn_sec_tc")
+			require.NoError(t, err)
+			assert.Equal(t, "challenge-cookie", challengeCookie.Value)
+			for name, value := range map[string]string{
+				"cdn_sec_tc": "fresh-security-cookie",
+				"acw_sc__v2": "fresh-challenge-cookie",
+				"PHPSESSID":  "fresh-session-cookie",
+			} {
+				http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/"})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"merchant_token":"fresh-token"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongBaseURL":       server.URL,
+		"LiandongAuthMode":      "credentials",
+		"LiandongUsername":      "provider-user",
+		"LiandongPassword":      "provider-password",
+		"LiandongMerchantToken": "stale-token",
+	}))
+	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
+	require.NoError(t, err)
+	client := newLiandongClientWithSettings(settingsSnapshot)
+	client.httpClient.Transport = server.Client().Transport
+	tradeNo := "TRADE-COOKIE-001"
+
+	verification, err := client.queryOrderWithSettings(
+		context.Background(),
+		settingsSnapshot,
+		&model.LiandongOrder{ProviderTradeNo: &tradeNo},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, verification)
+	assert.False(t, verification.Paid)
+	assert.Equal(t, int32(2), orderRequests.Load())
+	assert.Equal(t, int32(1), loginRequests.Load())
 }
 
 func TestLiandongManualTokenModeNeverCallsLogin(t *testing.T) {

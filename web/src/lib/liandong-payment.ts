@@ -48,6 +48,7 @@ export function formatLiandongQuota(quota: number): string {
 const liandongMessageAliases: Record<string, string> = {
   'liandong active order already exists': 'Failed to create payment order',
   'liandong product inventory is unavailable': 'Out of stock',
+  'liandong product has active orders': 'Delete failed',
   'Product inventory is unavailable': 'Out of stock',
   链动卡网支付当前不可用: 'Liandong gateway disabled',
   链动卡网支付未完成配置: 'Verification is not configured properly',

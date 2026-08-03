@@ -3,7 +3,11 @@
 set -Eeuo pipefail
 
 REPOSITORY_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
-PATCHCTL_SOURCE="${REPOSITORY_ROOT}/patch/2026-07-16/patchctl.sh"
+PATCHCTL_SOURCE="${PATCHCTL_SOURCE:-${REPOSITORY_ROOT}/patch/2026-07-16/patchctl.sh}"
+PATCH_ID="${PATCH_ID:-new-api-20260716}"
+PATCH_DATE="${PATCH_DATE:-2026-07-16}"
+BASELINE_COMMIT="${BASELINE_COMMIT:-7c28993f6bd9e92616f3f578212577f8b7c40b45}"
+MIGRATION_PATCH_ID="${MIGRATION_PATCH_ID:-new-api-20260716}"
 DDL_SOURCE="${REPOSITORY_ROOT}/patch/DDL"
 TEST_BASE="${REPOSITORY_ROOT}/.cache/patchctl-sqlite-e2e"
 mkdir -p -- "${TEST_BASE}"
@@ -62,9 +66,9 @@ cp -- "${PATCHCTL_SOURCE}" "${PACKAGE_DIR}/patchctl.sh"
 cp -- "${DDL_SOURCE}"/* "${PACKAGE_DIR}/DDL/"
 chmod 755 -- "${PACKAGE_DIR}/patchctl.sh"
 cat >"${PACKAGE_DIR}/manifest.env" <<EOF
-PATCH_ID=new-api-20260716
-PATCH_DATE=2026-07-16
-BASELINE_COMMIT=7c28993f6bd9e92616f3f578212577f8b7c40b45
+PATCH_ID=${PATCH_ID}
+PATCH_DATE=${PATCH_DATE}
+BASELINE_COMMIT=${BASELINE_COMMIT}
 SUPPORTED_OS=${PLATFORM}
 SUPPORTED_ARCHES=${ARCH}
 SUPPORTED_DATABASES=sqlite,mysql,postgres
@@ -125,7 +129,7 @@ SQL_DSN=local
 SQLITE_PATH=${NATIVE_DATABASE_PATH}
 EOF
 
-DATABASE_PATH="${NATIVE_DATABASE_PATH}" python - <<'PY'
+DATABASE_PATH="${NATIVE_DATABASE_PATH}" MIGRATION_PATCH_ID="${MIGRATION_PATCH_ID}" python - <<'PY'
 import os
 import sqlite3
 
@@ -262,7 +266,7 @@ fingerprint="$(
   printf '%s\n' "${identity}" |
     awk -F= '$1 == "DB_FINGERPRINT" { print substr($0, index($0, "=") + 1) }'
 )"
-export PATCH_CONFIRM_DEPLOY="new-api-20260716:${fingerprint}"
+export PATCH_CONFIRM_DEPLOY="${PATCH_ID}:${fingerprint}"
 
 "${PACKAGE_DIR}/patchctl.sh" deploy \
   --non-interactive \
@@ -301,14 +305,15 @@ history = database.execute(
     """
     SELECT state, length(ddl_checksum)
     FROM new_api_patch_history
-    WHERE patch_id = 'new-api-20260716'
-    """
+    WHERE patch_id = ?
+    """,
+    (os.environ["MIGRATION_PATCH_ID"],),
 ).fetchone()
 assert history == ("success", 64), history
 database.close()
 PY
 
-export PATCH_CONFIRM_ROLLBACK="new-api-20260716:$(basename -- "${backup_dir}")"
+export PATCH_CONFIRM_ROLLBACK="${PATCH_ID}:$(basename -- "${backup_dir}")"
 ROLLBACK_BACKUP_DIR="${backup_dir}"
 if [[ "${PLATFORM}" == "windows" ]]; then
   ROLLBACK_BACKUP_DIR="$(cygpath -w "${backup_dir}")"

@@ -3,7 +3,10 @@
 set -Eeuo pipefail
 
 REPOSITORY_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
-PATCHCTL_SOURCE="${REPOSITORY_ROOT}/patch/2026-07-16/patchctl.sh"
+PATCHCTL_SOURCE="${PATCHCTL_SOURCE:-${REPOSITORY_ROOT}/patch/2026-07-16/patchctl.sh}"
+PATCH_ID="${PATCH_ID:-new-api-20260716}"
+PATCH_DATE="${PATCH_DATE:-2026-07-16}"
+BASELINE_COMMIT="${BASELINE_COMMIT:-7c28993f6bd9e92616f3f578212577f8b7c40b45}"
 TEST_BASE="${REPOSITORY_ROOT}/.cache/patchctl-tests"
 mkdir -p -- "${TEST_BASE}"
 TEST_ROOT="$(mktemp -d "${TEST_BASE}/run-XXXXXX")"
@@ -228,10 +231,10 @@ prepare_case() {
 
   cp -- "${PATCHCTL_SOURCE}" "${PACKAGE_DIR}/patchctl.sh"
   chmod 755 -- "${PACKAGE_DIR}/patchctl.sh"
-  cat >"${PACKAGE_DIR}/manifest.env" <<'EOF'
-PATCH_ID=new-api-20260716
-PATCH_DATE=2026-07-16
-BASELINE_COMMIT=7c28993f6bd9e92616f3f578212577f8b7c40b45
+  cat >"${PACKAGE_DIR}/manifest.env" <<EOF
+PATCH_ID=${PATCH_ID}
+PATCH_DATE=${PATCH_DATE}
+BASELINE_COMMIT=${BASELINE_COMMIT}
 SUPPORTED_OS=linux
 SUPPORTED_ARCHES=amd64,arm64
 SUPPORTED_DATABASES=sqlite,mysql,postgres
@@ -277,7 +280,7 @@ EOF
   export FAKE_SERVICE_CONFIG="${APP_DIR}/.env"
   export FAKE_SCHEMA_STATE="${CASE_ROOT}/schema-state"
   export PATCH_EXPECTED_DB_FINGERPRINT="test-fingerprint"
-  export PATCH_CONFIRM_DEPLOY="new-api-20260716:test-fingerprint"
+  export PATCH_CONFIRM_DEPLOY="${PATCH_ID}:test-fingerprint"
   unset FAKE_APP_IDENTITY_FAIL FAKE_PATCHDB_BEHAVIOR FAKE_SERVICE_BEHAVIOR
   unset FAKE_UNAME_S FAKE_UNAME_M
   if [[ "${initial_service_state}" == "running" ]]; then
@@ -337,7 +340,7 @@ test_stopped_service_stays_stopped_across_deploy_and_rollback() {
     "${PACKAGE_DIR}/bin/linux-amd64/new-api"
 
   backup_dir="$(tr -d '\r\n' <"${BACKUP_ROOT}/LATEST_DEPLOY")"
-  export PATCH_CONFIRM_ROLLBACK="new-api-20260716:$(basename -- "${backup_dir}")"
+  export PATCH_CONFIRM_ROLLBACK="${PATCH_ID}:$(basename -- "${backup_dir}")"
   "${PACKAGE_DIR}/patchctl.sh" rollback --non-interactive --backup-dir "${backup_dir}" \
     >"${CASE_ROOT}/rollback-stdout.log" 2>"${CASE_ROOT}/rollback-stderr.log"
   assert_file_equals "${CASE_ROOT}/service-state" "stopped"
@@ -394,7 +397,7 @@ test_missing_linux_service_script_is_installed_and_removed_on_rollback() {
   backup_dir="$(tr -d '\r\n' <"${BACKUP_ROOT}/LATEST_DEPLOY")"
   assert_file_contains "${backup_dir}/backup-manifest.env" "HAS_SCRIPT=0"
 
-  export PATCH_CONFIRM_ROLLBACK="new-api-20260716:$(basename -- "${backup_dir}")"
+  export PATCH_CONFIRM_ROLLBACK="${PATCH_ID}:$(basename -- "${backup_dir}")"
   "${PACKAGE_DIR}/patchctl.sh" rollback \
     --non-interactive \
     --backup-dir "${backup_dir}" \

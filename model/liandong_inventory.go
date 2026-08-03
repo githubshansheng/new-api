@@ -97,6 +97,9 @@ func reserveLiandongInventoryTx(tx *gorm.DB, order *LiandongOrder) error {
 	if inventoryMode == "" {
 		inventoryMode = LiandongInventoryModeUnlimited
 	}
+	if product.GoodsType != "card" {
+		inventoryMode = LiandongInventoryModeUnlimited
+	}
 	if inventoryMode == LiandongInventoryModeUnlimited {
 		order.InventoryCodeID = 0
 		return tx.Model(&LiandongOrder{}).
@@ -221,6 +224,48 @@ func UpdateLiandongProduct(product *LiandongProduct) error {
 		product.CreatedBy = current.CreatedBy
 		product.ThumbnailVersion = current.ThumbnailVersion
 		return tx.Save(product).Error
+	})
+}
+
+func DeleteLiandongProduct(productID int) error {
+	if productID <= 0 {
+		return errors.New("invalid liandong product")
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var product LiandongProduct
+		if err := lockForUpdate(tx).Where("id = ?", productID).First(&product).Error; err != nil {
+			return err
+		}
+
+		var activeOrderCount int64
+		if err := tx.Model(&LiandongOrder{}).
+			Where("product_id = ?", productID).
+			Where(
+				"NOT (payment_status IN ? OR (payment_status = ? AND fulfillment_status = ?))",
+				[]string{
+					LiandongPaymentStatusCreateFailed,
+					LiandongPaymentStatusExpired,
+					LiandongPaymentStatusClosed,
+				},
+				LiandongPaymentStatusPaid,
+				LiandongFulfillmentStatusFulfilled,
+			).
+			Count(&activeOrderCount).Error; err != nil {
+			return err
+		}
+		if activeOrderCount > 0 {
+			return ErrLiandongProductInUse
+		}
+
+		if err := tx.Where("product_id = ?", productID).
+			Delete(&LiandongProductThumbnail{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("product_id = ?", productID).
+			Delete(&LiandongProductInventoryCode{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&product).Error
 	})
 }
 
@@ -744,7 +789,8 @@ func AddLiandongInventoryCodes(productID int, count int, name string, createdBy 
 		if err := lockForUpdate(tx).Where("id = ?", productID).First(&product).Error; err != nil {
 			return err
 		}
-		if product.InventoryMode != LiandongInventoryModeRedemptionCode {
+		if product.GoodsType != "card" ||
+			product.InventoryMode != LiandongInventoryModeRedemptionCode {
 			return errors.New("product does not use redemption code inventory")
 		}
 		var activeCount int64

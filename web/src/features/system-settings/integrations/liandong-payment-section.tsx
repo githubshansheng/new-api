@@ -33,6 +33,7 @@ import {
   Search,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -87,6 +88,7 @@ import { SettingsSection } from '../components/settings-section'
 import {
   closeLiandongOrder,
   createLiandongProduct,
+  deleteLiandongProduct,
   deleteLiandongThumbnail,
   disableLiandongInventory,
   getLiandongSettings,
@@ -126,6 +128,8 @@ const defaultSettings: LiandongSettings = {
   client_poll_interval_seconds: 5,
   reconcile_batch_size: 50,
   payment_timeout_minutes: 30,
+  payment_probe_enabled: false,
+  payment_probe_alert_email: '',
   juuid: '',
   auth_mode: 'manual_token',
   username_configured: false,
@@ -242,6 +246,8 @@ export function LiandongPaymentSection() {
   const [inventoryAction, setInventoryAction] = useState('')
   const [orderAction, setOrderAction] = useState('')
   const [closeOrder, setCloseOrder] = useState<LiandongRootOrder | null>(null)
+  const [deleteProduct, setDeleteProduct] =
+    useState<LiandongRootProduct | null>(null)
 
   const loadOrders = useCallback(async () => {
     const response = await listLiandongOrders(page, PAGE_SIZE, searchKeyword)
@@ -362,6 +368,8 @@ export function LiandongPaymentSection() {
         client_poll_interval_seconds: settings.client_poll_interval_seconds,
         reconcile_batch_size: settings.reconcile_batch_size,
         payment_timeout_minutes: settings.payment_timeout_minutes,
+        payment_probe_enabled: settings.payment_probe_enabled,
+        payment_probe_alert_email: settings.payment_probe_alert_email.trim(),
         juuid: settings.juuid,
         auth_mode: settings.auth_mode,
         username:
@@ -572,6 +580,7 @@ export function LiandongPaymentSection() {
       return
     }
     if (
+      productForm.goods_type === 'card' &&
       inventoryAddCount !== 0 &&
       (!Number.isInteger(inventoryAddCount) ||
         inventoryAddCount < 1 ||
@@ -608,6 +617,14 @@ export function LiandongPaymentSection() {
           productForm.business_type === 'subscription'
             ? productForm.plan_id
             : 0,
+        inventory_mode:
+          productForm.goods_type === 'card'
+            ? productForm.inventory_mode
+            : 'unlimited',
+        inventory_capacity:
+          productForm.goods_type === 'card'
+            ? productForm.inventory_capacity
+            : 0,
       }
       const response = editingProduct
         ? await updateLiandongProduct(editingProduct.id, payload)
@@ -643,6 +660,7 @@ export function LiandongPaymentSection() {
         setThumbnailBlob(null)
       }
       if (
+        productForm.goods_type === 'card' &&
         productForm.inventory_mode === 'redemption_code' &&
         inventoryAddCount > 0
       ) {
@@ -701,6 +719,26 @@ export function LiandongPaymentSection() {
         return
       }
       await loadProducts()
+    } finally {
+      setOrderAction('')
+    }
+  }
+
+  const removeProduct = async (product: LiandongRootProduct) => {
+    setOrderAction(`delete-product-${product.id}`)
+    try {
+      const response = await deleteLiandongProduct(product.id)
+      if (!response.success) {
+        toast.error(
+          localizeLiandongMessage(t, response.message, 'Delete failed')
+        )
+        return
+      }
+      setDeleteProduct(null)
+      toast.success(t('Deleted successfully'))
+      await loadProducts()
+    } catch {
+      toast.error(t('Delete failed'))
     } finally {
       setOrderAction('')
     }
@@ -844,6 +882,19 @@ export function LiandongPaymentSection() {
             )}
           />
           <SettingsSwitchField
+            checked={settings.payment_probe_enabled}
+            onCheckedChange={(payment_probe_enabled) =>
+              setSettings((current) => ({
+                ...current,
+                payment_probe_enabled,
+              }))
+            }
+            label={t('Enable payment QR monitoring')}
+            description={t(
+              'Checks each newly created card marketplace payment page through the dedicated proxy and includes the backend merchant token.'
+            )}
+          />
+          <SettingsSwitchField
             checked={settings.proxy_enabled}
             onCheckedChange={(proxy_enabled) =>
               setSettings((current) => ({ ...current, proxy_enabled }))
@@ -857,9 +908,7 @@ export function LiandongPaymentSection() {
 
         <div className='grid gap-4 sm:grid-cols-2'>
           <div className='grid gap-1.5 sm:col-span-2'>
-            <Label htmlFor='liandong-base-url'>
-              {t('Provider Base URL')}
-            </Label>
+            <Label htmlFor='liandong-base-url'>{t('Provider Base URL')}</Label>
             <Input
               id='liandong-base-url'
               type='url'
@@ -1123,6 +1172,29 @@ export function LiandongPaymentSection() {
               )}
             </p>
           </div>
+          <div className='grid gap-1.5 sm:col-span-2'>
+            <Label htmlFor='liandong-payment-probe-email'>
+              {t('Payment monitoring alert email')}
+            </Label>
+            <Input
+              id='liandong-payment-probe-email'
+              type='email'
+              value={settings.payment_probe_alert_email}
+              maxLength={254}
+              placeholder='alerts@example.com'
+              onChange={(event) =>
+                setSettings((current) => ({
+                  ...current,
+                  payment_probe_alert_email: event.target.value,
+                }))
+              }
+            />
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Sends a failure alert to this address through the globally configured SMTP service.'
+              )}
+            </p>
+          </div>
           <div className='grid gap-1.5'>
             <Label htmlFor='liandong-client-poll-interval'>
               {t('Order status query interval (seconds)')}
@@ -1275,14 +1347,22 @@ export function LiandongPaymentSection() {
             {
               id: 'inventory',
               header: t('Inventory'),
-              cell: (product) =>
-                product.inventory_mode === 'unlimited' ? (
-                  <StatusBadge
-                    label={t('Unlimited stock')}
-                    variant='success'
-                    copyable={false}
-                  />
-                ) : (
+              cell: (product) => {
+                if (product.goods_type !== 'card') {
+                  return '-'
+                }
+
+                if (product.inventory_mode === 'unlimited') {
+                  return (
+                    <StatusBadge
+                      label={t('Unlimited stock')}
+                      variant='success'
+                      copyable={false}
+                    />
+                  )
+                }
+
+                return (
                   <div className='space-y-1 text-xs'>
                     <StatusBadge
                       label={inventoryLevelLabel(product.inventory_level, t)}
@@ -1302,7 +1382,8 @@ export function LiandongPaymentSection() {
                       })}
                     </p>
                   </div>
-                ),
+                )
+              },
             },
             {
               id: 'amount',
@@ -1331,14 +1412,26 @@ export function LiandongPaymentSection() {
               className: 'text-right',
               cellClassName: 'text-right',
               cell: (product) => (
-                <Button
-                  variant='ghost'
-                  size='icon-sm'
-                  onClick={() => openEditProduct(product)}
-                  aria-label={t('Edit')}
-                >
-                  <Pencil className='h-4 w-4' />
-                </Button>
+                <div className='flex justify-end gap-1'>
+                  <Button
+                    variant='ghost'
+                    size='icon-sm'
+                    onClick={() => openEditProduct(product)}
+                    aria-label={t('Edit')}
+                  >
+                    <Pencil className='h-4 w-4' />
+                  </Button>
+                  <Button
+                    variant='ghost'
+                    size='icon-sm'
+                    className='text-destructive hover:text-destructive'
+                    onClick={() => setDeleteProduct(product)}
+                    disabled={orderAction === `delete-product-${product.id}`}
+                    aria-label={t('Delete')}
+                  >
+                    <Trash2 className='h-4 w-4' />
+                  </Button>
+                </div>
               ),
             },
           ]}
@@ -1671,6 +1764,12 @@ export function LiandongPaymentSection() {
                   setProductForm((current) => ({
                     ...current,
                     goods_type: goodsType || 'card',
+                    inventory_mode:
+                      goodsType === 'card'
+                        ? current.inventory_mode
+                        : 'unlimited',
+                    inventory_capacity:
+                      goodsType === 'card' ? current.inventory_capacity : 0,
                   }))
                 }
               >
@@ -1730,6 +1829,14 @@ export function LiandongPaymentSection() {
                           goods_type: goods.goods_type || current.goods_type,
                           goods_key: goods.goods_key,
                           name: goods.name,
+                          inventory_mode:
+                            goods.goods_type === 'card'
+                              ? current.inventory_mode
+                              : 'unlimited',
+                          inventory_capacity:
+                            goods.goods_type === 'card'
+                              ? current.inventory_capacity
+                              : 0,
                         }))
                       }
                     >
@@ -1842,6 +1949,12 @@ export function LiandongPaymentSection() {
                   setProductForm((current) => ({
                     ...current,
                     goods_type: goodsType || 'card',
+                    inventory_mode:
+                      goodsType === 'card'
+                        ? current.inventory_mode
+                        : 'unlimited',
+                    inventory_capacity:
+                      goodsType === 'card' ? current.inventory_capacity : 0,
                   }))
                 }
               >
@@ -1993,185 +2106,189 @@ export function LiandongPaymentSection() {
             </div>
           </div>
 
-          <div className='space-y-3 border-b pb-5'>
-            <div className='flex items-center gap-2'>
-              <Boxes className='h-4 w-4' />
-              <h5 className='text-sm font-medium'>{t('Inventory settings')}</h5>
-            </div>
-            <div className='grid gap-4 sm:grid-cols-2'>
-              <div className='grid gap-1.5'>
-                <Label>{t('Inventory mode')}</Label>
-                <Select
-                  items={[
-                    { value: 'unlimited', label: t('Unlimited stock') },
-                    {
-                      value: 'redemption_code',
-                      label: t('Internal redemption-code stock'),
-                    },
-                  ]}
-                  value={productForm.inventory_mode}
-                  onValueChange={(inventoryMode) => {
-                    if (
-                      inventoryMode !== 'unlimited' &&
-                      inventoryMode !== 'redemption_code'
-                    ) {
-                      return
-                    }
-                    setProductForm((current) => ({
-                      ...current,
-                      inventory_mode: inventoryMode,
-                      inventory_capacity:
-                        inventoryMode === 'unlimited'
-                          ? 0
-                          : Math.max(1, current.inventory_capacity),
-                    }))
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent alignItemWithTrigger={false}>
-                    <SelectGroup>
-                      <SelectItem value='unlimited'>
-                        {t('Unlimited stock')}
-                      </SelectItem>
-                      <SelectItem value='redemption_code'>
-                        {t('Internal redemption-code stock')}
-                      </SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <p className='text-muted-foreground text-xs'>
-                  {t(
-                    'Internal stock codes are reservation units only. They are never delivered to users and cannot be redeemed through the normal redemption endpoint.'
-                  )}
-                </p>
+          {productForm.goods_type === 'card' && (
+            <div className='space-y-3 border-b pb-5'>
+              <div className='flex items-center gap-2'>
+                <Boxes className='h-4 w-4' />
+                <h5 className='text-sm font-medium'>
+                  {t('Inventory settings')}
+                </h5>
               </div>
-              {productForm.inventory_mode === 'redemption_code' && (
+              <div className='grid gap-4 sm:grid-cols-2'>
                 <div className='grid gap-1.5'>
-                  <Label>{t('Inventory capacity')}</Label>
-                  <Input
-                    type='number'
-                    min={1}
-                    step={1}
-                    value={productForm.inventory_capacity}
-                    onChange={(event) =>
+                  <Label>{t('Inventory mode')}</Label>
+                  <Select
+                    items={[
+                      { value: 'unlimited', label: t('Unlimited stock') },
+                      {
+                        value: 'redemption_code',
+                        label: t('Internal redemption-code stock'),
+                      },
+                    ]}
+                    value={productForm.inventory_mode}
+                    onValueChange={(inventoryMode) => {
+                      if (
+                        inventoryMode !== 'unlimited' &&
+                        inventoryMode !== 'redemption_code'
+                      ) {
+                        return
+                      }
                       setProductForm((current) => ({
                         ...current,
-                        inventory_capacity: event.target.valueAsNumber || 0,
+                        inventory_mode: inventoryMode,
+                        inventory_capacity:
+                          inventoryMode === 'unlimited'
+                            ? 0
+                            : Math.max(1, current.inventory_capacity),
                       }))
-                    }
-                  />
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent alignItemWithTrigger={false}>
+                      <SelectGroup>
+                        <SelectItem value='unlimited'>
+                          {t('Unlimited stock')}
+                        </SelectItem>
+                        <SelectItem value='redemption_code'>
+                          {t('Internal redemption-code stock')}
+                        </SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
                   <p className='text-muted-foreground text-xs'>
                     {t(
-                      'Available plus reserved stock cannot exceed this fixed selling capacity.'
+                      'Internal stock codes are reservation units only. They are never delivered to users and cannot be redeemed through the normal redemption endpoint.'
                     )}
                   </p>
                 </div>
-              )}
-            </div>
-
-            {productForm.inventory_mode === 'redemption_code' && (
-              <div className='grid gap-4 sm:grid-cols-2'>
-                <div className='space-y-2 rounded border p-3'>
-                  <div className='flex items-center gap-2'>
-                    <KeyRound className='h-4 w-4' />
-                    <Label>{t('Batch add inventory')}</Label>
-                  </div>
-                  <Input
-                    type='number'
-                    min={0}
-                    max={1000}
-                    step={1}
-                    value={inventoryAddCount}
-                    onChange={(event) =>
-                      setInventoryAddCount(event.target.valueAsNumber || 0)
-                    }
-                    placeholder={t('Quantity')}
-                  />
-                  <Input
-                    value={inventoryName}
-                    maxLength={128}
-                    onChange={(event) => setInventoryName(event.target.value)}
-                    placeholder={t(
-                      'Inventory code name; defaults to product name'
-                    )}
-                  />
-                  <p className='text-muted-foreground text-xs'>
-                    {editingProduct
-                      ? t(
-                          'The quantity is added when the product is saved, or can be added immediately with the button below.'
-                        )
-                      : t(
-                          'The quantity is generated after the product is created.'
-                        )}
-                  </p>
-                  {editingProduct && (
-                    <Button
-                      type='button'
-                      variant='outline'
-                      onClick={() => void runInventoryAction('add')}
-                      disabled={inventoryAction !== ''}
-                    >
-                      {inventoryAction === 'add' ? (
-                        <Loader2 className='h-4 w-4 animate-spin' />
-                      ) : (
-                        <Plus className='h-4 w-4' />
+                {productForm.inventory_mode === 'redemption_code' && (
+                  <div className='grid gap-1.5'>
+                    <Label>{t('Inventory capacity')}</Label>
+                    <Input
+                      type='number'
+                      min={1}
+                      step={1}
+                      value={productForm.inventory_capacity}
+                      onChange={(event) =>
+                        setProductForm((current) => ({
+                          ...current,
+                          inventory_capacity: event.target.valueAsNumber || 0,
+                        }))
+                      }
+                    />
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        'Available plus reserved stock cannot exceed this fixed selling capacity.'
                       )}
-                      {t('Add inventory now')}
-                    </Button>
-                  )}
-                </div>
+                    </p>
+                  </div>
+                )}
+              </div>
 
-                {editingProduct && (
+              {productForm.inventory_mode === 'redemption_code' && (
+                <div className='grid gap-4 sm:grid-cols-2'>
                   <div className='space-y-2 rounded border p-3'>
-                    <Label>{t('Current inventory')}</Label>
-                    <div className='grid grid-cols-2 gap-2 text-xs'>
-                      <p>
-                        {t('Available')}: {editingProduct.inventory_available}
-                      </p>
-                      <p>
-                        {t('Reserved')}: {editingProduct.inventory_reserved}
-                      </p>
-                      <p>
-                        {t('Consumed')}: {editingProduct.inventory_consumed}
-                      </p>
-                      <p>
-                        {t('Disabled')}: {editingProduct.inventory_disabled}
-                      </p>
+                    <div className='flex items-center gap-2'>
+                      <KeyRound className='h-4 w-4' />
+                      <Label>{t('Batch add inventory')}</Label>
                     </div>
                     <Input
                       type='number'
                       min={0}
                       max={1000}
                       step={1}
-                      value={inventoryDisableCount}
+                      value={inventoryAddCount}
                       onChange={(event) =>
-                        setInventoryDisableCount(
-                          event.target.valueAsNumber || 0
-                        )
+                        setInventoryAddCount(event.target.valueAsNumber || 0)
                       }
-                      placeholder={t('Available quantity to disable')}
+                      placeholder={t('Quantity')}
                     />
-                    <Button
-                      type='button'
-                      variant='outline'
-                      className='text-destructive'
-                      onClick={() => void runInventoryAction('disable')}
-                      disabled={inventoryAction !== ''}
-                    >
-                      {inventoryAction === 'disable' ? (
-                        <Loader2 className='h-4 w-4 animate-spin' />
-                      ) : (
-                        <CircleX className='h-4 w-4' />
+                    <Input
+                      value={inventoryName}
+                      maxLength={128}
+                      onChange={(event) => setInventoryName(event.target.value)}
+                      placeholder={t(
+                        'Inventory code name; defaults to product name'
                       )}
-                      {t('Disable available inventory')}
-                    </Button>
+                    />
+                    <p className='text-muted-foreground text-xs'>
+                      {editingProduct
+                        ? t(
+                            'The quantity is added when the product is saved, or can be added immediately with the button below.'
+                          )
+                        : t(
+                            'The quantity is generated after the product is created.'
+                          )}
+                    </p>
+                    {editingProduct && (
+                      <Button
+                        type='button'
+                        variant='outline'
+                        onClick={() => void runInventoryAction('add')}
+                        disabled={inventoryAction !== ''}
+                      >
+                        {inventoryAction === 'add' ? (
+                          <Loader2 className='h-4 w-4 animate-spin' />
+                        ) : (
+                          <Plus className='h-4 w-4' />
+                        )}
+                        {t('Add inventory now')}
+                      </Button>
+                    )}
                   </div>
-                )}
-              </div>
-            )}
-          </div>
+
+                  {editingProduct && (
+                    <div className='space-y-2 rounded border p-3'>
+                      <Label>{t('Current inventory')}</Label>
+                      <div className='grid grid-cols-2 gap-2 text-xs'>
+                        <p>
+                          {t('Available')}: {editingProduct.inventory_available}
+                        </p>
+                        <p>
+                          {t('Reserved')}: {editingProduct.inventory_reserved}
+                        </p>
+                        <p>
+                          {t('Consumed')}: {editingProduct.inventory_consumed}
+                        </p>
+                        <p>
+                          {t('Disabled')}: {editingProduct.inventory_disabled}
+                        </p>
+                      </div>
+                      <Input
+                        type='number'
+                        min={0}
+                        max={1000}
+                        step={1}
+                        value={inventoryDisableCount}
+                        onChange={(event) =>
+                          setInventoryDisableCount(
+                            event.target.valueAsNumber || 0
+                          )
+                        }
+                        placeholder={t('Available quantity to disable')}
+                      />
+                      <Button
+                        type='button'
+                        variant='outline'
+                        className='text-destructive'
+                        onClick={() => void runInventoryAction('disable')}
+                        disabled={inventoryAction !== ''}
+                      >
+                        {inventoryAction === 'disable' ? (
+                          <Loader2 className='h-4 w-4 animate-spin' />
+                        ) : (
+                          <CircleX className='h-4 w-4' />
+                        )}
+                        {t('Disable available inventory')}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className='grid gap-4 sm:grid-cols-2'>
             <div className='grid gap-1.5'>
@@ -2211,6 +2328,30 @@ export function LiandongPaymentSection() {
           </div>
         </div>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!deleteProduct}
+        onOpenChange={(open) => {
+          if (!open) setDeleteProduct(null)
+        }}
+        title={t('Confirm delete')}
+        desc={
+          <span>
+            <strong>{deleteProduct?.name}</strong>
+            {deleteProduct ? '. ' : ''}
+            {t('This action cannot be undone.')}
+          </span>
+        }
+        destructive
+        confirmText={t('Delete')}
+        isLoading={
+          !!deleteProduct &&
+          orderAction === `delete-product-${deleteProduct.id}`
+        }
+        handleConfirm={() => {
+          if (deleteProduct) void removeProduct(deleteProduct)
+        }}
+      />
 
       <ConfirmDialog
         open={!!closeOrder}

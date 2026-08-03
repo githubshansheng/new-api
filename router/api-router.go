@@ -217,6 +217,7 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.GET("/liandong/products", controller.RootListLiandongProducts)
 			optionRoute.POST("/liandong/products", controller.RootCreateLiandongProduct)
 			optionRoute.PATCH("/liandong/products/:id", controller.RootUpdateLiandongProduct)
+			optionRoute.DELETE("/liandong/products/:id", controller.RootDeleteLiandongProduct)
 			optionRoute.POST("/liandong/products/:id/inventory", controller.RootAddLiandongInventory)
 			optionRoute.POST("/liandong/products/:id/inventory/disable", controller.RootDisableLiandongInventory)
 			optionRoute.PUT("/liandong/products/:id/thumbnail", controller.RootUploadLiandongThumbnail)

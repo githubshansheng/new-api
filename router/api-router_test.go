@@ -117,6 +117,7 @@ func TestLiandongUserRoutesRequireAuthenticationAndManagementRequiresRoot(t *tes
 		{method: http.MethodGet, path: "/api/option/liandong/products"},
 		{method: http.MethodPost, path: "/api/option/liandong/products"},
 		{method: http.MethodPatch, path: "/api/option/liandong/products/1"},
+		{method: http.MethodDelete, path: "/api/option/liandong/products/1"},
 		{method: http.MethodPost, path: "/api/option/liandong/products/1/inventory"},
 		{method: http.MethodPost, path: "/api/option/liandong/products/1/inventory/disable"},
 		{method: http.MethodPut, path: "/api/option/liandong/products/1/thumbnail"},

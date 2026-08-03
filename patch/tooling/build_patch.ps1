@@ -1,15 +1,21 @@
 [CmdletBinding()]
 param(
-    [switch]$SkipFrontendBuild
+    [switch]$SkipFrontendBuild,
+    [ValidatePattern("^\d{4}-\d{2}-\d{2}$")]
+    [string]$PatchDate = (Get-Date -Format "yyyy-MM-dd"),
+    [string]$BaselineCommit = "7c28993f6bd9e92616f3f578212577f8b7c40b45"
 )
 
 $ErrorActionPreference = "Stop"
-$PatchId = "new-api-20260716"
-$PatchDate = "2026-07-16"
-$BaselineCommit = "7c28993f6bd9e92616f3f578212577f8b7c40b45"
+$TemplateDate = "2026-07-16"
+$TemplateDateCompact = $TemplateDate.Replace("-", "")
+$TemplatePatchId = "new-api-$TemplateDateCompact"
+$PatchDateCompact = $PatchDate.Replace("-", "")
+$PatchId = "new-api-$PatchDateCompact"
 $RepositoryRoot = [System.IO.Path]::GetFullPath(
     (Join-Path $PSScriptRoot "..\..")
 )
+$TemplateRoot = Join-Path $RepositoryRoot "patch\$TemplateDate"
 $DateRoot = Join-Path $RepositoryRoot "patch\$PatchDate"
 $PackageDir = Join-Path $DateRoot $PatchId
 $ArchivePath = Join-Path $DateRoot "$PatchId-linux-windows-amd64-arm64.tar.gz"
@@ -98,6 +104,26 @@ if (-not $temporaryObjectsFull.StartsWith(
 }
 
 New-Item -ItemType Directory -Force -Path $DateRoot, $BuildRoot | Out-Null
+if ($PatchDate -ne $TemplateDate) {
+    foreach ($name in @("patchctl.sh", "manifest.env", "README.md", "USAGE.md")) {
+        $templatePath = Join-Path $TemplateRoot $name
+        if (-not (Test-Path -LiteralPath $templatePath)) {
+            throw "Patch template is missing: $templatePath"
+        }
+        $content = [System.IO.File]::ReadAllText(
+            $templatePath,
+            [System.Text.Encoding]::UTF8
+        )
+        $content = $content.Replace($TemplatePatchId, $PatchId)
+        $content = $content.Replace($TemplateDateCompact, $PatchDateCompact)
+        $content = $content.Replace($TemplateDate, $PatchDate)
+        [System.IO.File]::WriteAllText(
+            (Join-Path $DateRoot $name),
+            $content,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+    }
+}
 if (Test-Path -LiteralPath $PackageDir) {
     Remove-Item -LiteralPath $PackageDir -Recurse -Force
 }

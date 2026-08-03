@@ -405,6 +405,30 @@ func TestUpdateLiandongSettingsStoresIndependentPollingIntervals(t *testing.T) {
 	assert.NotContains(t, recorder.Body.String(), "merchant_token")
 }
 
+func TestUpdateLiandongSettingsStoresPaymentProbeAlertConfiguration(t *testing.T) {
+	setupLiandongControllerTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(
+		http.MethodPut,
+		"/api/option/liandong",
+		strings.NewReader(`{
+			"payment_probe_enabled":true,
+			"payment_probe_alert_email":"alerts@example.com"
+		}`),
+	)
+	context.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateLiandongSettings(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
+	require.NoError(t, err)
+	assert.True(t, settingsSnapshot.PaymentProbeEnabled)
+	assert.Equal(t, "alerts@example.com", settingsSnapshot.PaymentProbeAlertEmail)
+}
+
 func TestUpdateLiandongSettingsStoresProxyTimeout(t *testing.T) {
 	setupLiandongControllerTestDB(t)
 

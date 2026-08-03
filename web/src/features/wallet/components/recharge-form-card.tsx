@@ -242,7 +242,7 @@ export function RechargeFormCard({
               {t('Liandong fixed products')}
             </Label>
           </div>
-          <div className='grid grid-cols-[repeat(auto-fill,220px)] justify-center gap-3 sm:justify-start'>
+          <div className='grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3'>
             {liandongProducts.map((product) => (
               <LiandongProductCard
                 key={product.id}

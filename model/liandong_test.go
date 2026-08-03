@@ -245,6 +245,90 @@ func TestValidateLiandongProductOnlyAllowsCNYAndUSD(t *testing.T) {
 	assert.Contains(t, err.Error(), "CNY or USD")
 }
 
+func TestValidateLiandongProductDisablesInventoryForNonCardGoods(t *testing.T) {
+	product := &LiandongProduct{
+		BusinessType:        LiandongBusinessTypeQuota,
+		GoodsType:           "resource",
+		Name:                "Resource product",
+		GoodsKey:            "resource-product",
+		QuotaAmount:         100,
+		ExpectedAmountMinor: 100,
+		Currency:            "CNY",
+		InventoryMode:       LiandongInventoryModeRedemptionCode,
+		InventoryCapacity:   10,
+	}
+
+	require.NoError(t, ValidateLiandongProduct(product))
+	assert.Equal(t, LiandongInventoryModeUnlimited, product.InventoryMode)
+	assert.Zero(t, product.InventoryCapacity)
+}
+
+func TestDeleteLiandongProductRemovesProductAssets(t *testing.T) {
+	truncateTables(t)
+	_, product := createLiandongQuotaFixture(t)
+	product.GoodsType = "card"
+	product.InventoryMode = LiandongInventoryModeRedemptionCode
+	product.InventoryCapacity = 1
+	require.NoError(t, UpdateLiandongProduct(product))
+	_, err := AddLiandongInventoryCodes(product.ID, 1, "", common.RoleRootUser)
+	require.NoError(t, err)
+	require.NoError(t, DB.Create(&LiandongProductThumbnail{
+		ProductID:   product.ID,
+		ContentType: "image/png",
+		Data:        []byte("thumbnail"),
+		Width:       440,
+		Height:      440,
+		Size:        len("thumbnail"),
+		Version:     1,
+	}).Error)
+
+	require.NoError(t, DeleteLiandongProduct(product.ID))
+
+	var productCount int64
+	require.NoError(t, DB.Model(&LiandongProduct{}).
+		Where("id = ?", product.ID).
+		Count(&productCount).Error)
+	assert.Zero(t, productCount)
+
+	var thumbnailCount int64
+	require.NoError(t, DB.Model(&LiandongProductThumbnail{}).
+		Where("product_id = ?", product.ID).
+		Count(&thumbnailCount).Error)
+	assert.Zero(t, thumbnailCount)
+
+	var inventoryCount int64
+	require.NoError(t, DB.Model(&LiandongProductInventoryCode{}).
+		Where("product_id = ?", product.ID).
+		Count(&inventoryCount).Error)
+	assert.Zero(t, inventoryCount)
+}
+
+func TestDeleteLiandongProductRejectsActiveOrders(t *testing.T) {
+	truncateTables(t)
+	_, order := createLiandongQuotaOrder(t)
+
+	err := DeleteLiandongProduct(order.ProductID)
+
+	require.ErrorIs(t, err, ErrLiandongProductInUse)
+	var productCount int64
+	require.NoError(t, DB.Model(&LiandongProduct{}).
+		Where("id = ?", order.ProductID).
+		Count(&productCount).Error)
+	assert.EqualValues(t, 1, productCount)
+}
+
+func TestDeleteLiandongProductAllowsExpiredOrders(t *testing.T) {
+	truncateTables(t)
+	_, order := createLiandongQuotaOrder(t)
+	require.NoError(t, DB.Model(&LiandongOrder{}).
+		Where("id = ?", order.ID).
+		Updates(map[string]interface{}{
+			"payment_status": LiandongPaymentStatusExpired,
+		}).Error)
+
+	require.NoError(t, DeleteLiandongProduct(order.ProductID))
+}
+
 func TestLiandongProductMigrationAddsInventoryColumnsToLegacyTable(t *testing.T) {
 	legacyDB, err := gorm.Open(
 		sqlite.Open(filepath.Join(t.TempDir(), "liandong-legacy.db")),

@@ -71,7 +71,8 @@ type Props = {
 
 export function LiandongProductCard({ product, onSelect }: Props) {
   const { t } = useTranslation()
-  const disabled = product.inventory_level === 'out_of_stock'
+  const hasInventory = product.goods_type === 'card'
+  const disabled = hasInventory && product.inventory_level === 'out_of_stock'
   const subscription = product.subscription
   let specification = t('Subscription')
   let subscriptionDetails = ''
@@ -105,13 +106,17 @@ export function LiandongProductCard({ product, onSelect }: Props) {
       disabled={disabled}
       onClick={() => onSelect(product)}
       className={cn(
-        'bg-card text-card-foreground group relative flex h-[300px] w-[220px] shrink-0 flex-col overflow-hidden rounded-lg border text-left shadow-xs transition-colors',
+        'bg-card text-card-foreground group relative flex w-full min-w-0 flex-col overflow-hidden rounded-lg border text-left shadow-xs transition-colors',
         'focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none',
         disabled
           ? 'cursor-not-allowed opacity-65'
           : 'hover:border-primary/60 hover:bg-accent/20'
       )}
-      aria-label={`${product.name}, ${inventoryLabel(product.inventory_level, t)}`}
+      aria-label={
+        hasInventory
+          ? `${product.name}, ${inventoryLabel(product.inventory_level, t)}`
+          : product.name
+      }
     >
       <div className='bg-muted relative aspect-square w-full shrink-0 overflow-hidden border-b'>
         {product.thumbnail_url ? (
@@ -126,17 +131,19 @@ export function LiandongProductCard({ product, onSelect }: Props) {
             <span className='line-clamp-2 text-xs'>{product.name}</span>
           </div>
         )}
-        <span
-          className={cn(
-            'absolute top-2 right-2 rounded px-2 py-1 text-[11px] leading-none font-medium',
-            inventoryClassName(product.inventory_level)
-          )}
-        >
-          {inventoryLabel(product.inventory_level, t)}
-        </span>
+        {hasInventory && (
+          <span
+            className={cn(
+              'absolute top-2 right-2 rounded px-2 py-1 text-[11px] leading-none font-medium',
+              inventoryClassName(product.inventory_level)
+            )}
+          >
+            {inventoryLabel(product.inventory_level, t)}
+          </span>
+        )}
       </div>
 
-      <div className='flex min-h-0 flex-1 flex-col justify-between gap-0.5 px-3 py-1.5'>
+      <div className='flex min-h-[84px] flex-1 flex-col justify-between gap-0.5 px-3 py-2'>
         <div className='min-w-0'>
           <p className='truncate text-[13px] leading-4 font-medium'>
             {product.name}

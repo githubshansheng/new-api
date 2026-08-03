@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"sort"
@@ -24,7 +26,9 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/bytedance/gopkg/util/gopool"
 	xproxy "golang.org/x/net/proxy"
+	"golang.org/x/net/publicsuffix"
 )
 
 const (
@@ -51,6 +55,7 @@ var liandongSensitiveDiagnosticValuePattern = regexp.MustCompile(
 	`(?i)(["']?(?:merchant[-_ ]?token|token|password|username|juuid|contact|goods[-_ ]?key)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,\s;&]+)`,
 )
 var liandongAuthRefreshMu sync.Mutex
+var liandongCookieJars sync.Map
 
 type LiandongPaymentView struct {
 	LocalTradeNo              string `json:"local_trade_no"`
@@ -257,6 +262,20 @@ func newLiandongClientWithSettings(
 	if err != nil && configErr == nil {
 		configErr = err
 	}
+	var cookieJar http.CookieJar
+	if configErr == nil {
+		if sharedJar, ok := liandongCookieJars.Load(baseURL); ok {
+			cookieJar = sharedJar.(http.CookieJar)
+		} else {
+			newJar, jarErr := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+			if jarErr != nil {
+				configErr = jarErr
+			} else {
+				sharedJar, _ := liandongCookieJars.LoadOrStore(baseURL, newJar)
+				cookieJar = sharedJar.(http.CookieJar)
+			}
+		}
+	}
 	dialer := &net.Dialer{
 		Timeout:   dialTimeout,
 		KeepAlive: 30 * time.Second,
@@ -281,6 +300,7 @@ func newLiandongClientWithSettings(
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   requestTimeout,
+			Jar:       cookieJar,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 3 {
 					return errors.New("too many redirects")
@@ -510,6 +530,135 @@ func (c *liandongClient) createOrder(
 	return tradeNo, nil
 }
 
+func (c *liandongClient) probePaymentPage(
+	ctx context.Context,
+	providerTradeNo string,
+	settingsSnapshot setting.LiandongPaymentSettings,
+) error {
+	merchantToken := strings.TrimSpace(settingsSnapshot.MerchantToken)
+	if merchantToken == "" && settingsSnapshot.AuthMode == setting.LiandongAuthModeCredentials {
+		refreshed, err := c.refreshMerchantToken(ctx, "")
+		if err != nil {
+			return err
+		}
+		merchantToken = refreshed
+	}
+	if merchantToken == "" {
+		return errors.New("liandong merchant token is not configured")
+	}
+
+	resp, body, err := c.requestPaymentPage(ctx, providerTradeNo, merchantToken)
+	if err != nil {
+		return err
+	}
+	if liandongUnauthorizedResponse(resp.StatusCode, body) {
+		if settingsSnapshot.AuthMode != setting.LiandongAuthModeCredentials {
+			return errors.New("liandong authentication failed")
+		}
+		refreshed, err := c.refreshMerchantToken(ctx, merchantToken)
+		if err != nil {
+			return err
+		}
+		resp, body, err = c.requestPaymentPage(ctx, providerTradeNo, refreshed)
+		if err != nil {
+			return err
+		}
+		if liandongUnauthorizedResponse(resp.StatusCode, body) {
+			return errors.New("liandong authentication failed after token refresh")
+		}
+	}
+	return validateLiandongPaymentPageResponse(resp, body)
+}
+
+func (c *liandongClient) requestPaymentPage(
+	ctx context.Context,
+	providerTradeNo string,
+	merchantToken string,
+) (*http.Response, []byte, error) {
+	if c.configErr != nil {
+		return nil, nil, c.configErr
+	}
+	if !liandongTradeNoPattern.MatchString(providerTradeNo) {
+		return nil, nil, errors.New("provider trade number is invalid")
+	}
+	if strings.TrimSpace(merchantToken) == "" {
+		return nil, nil, errors.New("merchant token is missing")
+	}
+	endpoint, err := liandongEndpointURL(c.baseURL, liandongPaymentPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	paymentURL := endpoint + "?trade_no=" + url.QueryEscape(providerTradeNo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, paymentURL, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("merchant-token", merchantToken)
+	configuredURL, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, nil, err
+	}
+	probeHTTPClient := *c.httpClient
+	probeHTTPClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return errors.New("too many redirects")
+		}
+		if strings.EqualFold(req.URL.Scheme, configuredURL.Scheme) &&
+			strings.EqualFold(req.URL.Host, configuredURL.Host) {
+			return nil
+		}
+		if strings.EqualFold(req.URL.Scheme, "https") && req.URL.Host != "" {
+			return http.ErrUseLastResponse
+		}
+		return errors.New("payment page redirect target is not allowed")
+	}
+	resp, err := probeHTTPClient.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	limited := io.LimitReader(resp.Body, liandongMaxBodyBytes+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(body) > liandongMaxBodyBytes {
+		return nil, nil, errors.New("payment page response is too large")
+	}
+	return resp, body, nil
+}
+
+func validateLiandongPaymentPageResponse(resp *http.Response, body []byte) error {
+	if resp == nil {
+		return errors.New("payment page returned no response")
+	}
+	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
+		redirectTarget, err := resp.Location()
+		if err == nil && redirectTarget.IsAbs() &&
+			strings.EqualFold(redirectTarget.Scheme, "https") {
+			return nil
+		}
+		return errors.New("payment page returned an invalid redirect")
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("payment page returned HTTP %d", resp.StatusCode)
+	}
+	normalized := normalizeLiandongJSONBody(body)
+	if len(normalized) == 0 {
+		return errors.New("payment page returned an empty response")
+	}
+	if isLiandongBrowserVerificationPage(normalized) {
+		return errors.New("payment page returned an upstream browser verification page")
+	}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "text/html") && normalized[0] != '<' {
+		return errors.New("payment page did not return HTML")
+	}
+	return nil
+}
+
 func (c *liandongClient) queryOrderWithSettings(
 	ctx context.Context,
 	settingsSnapshot setting.LiandongPaymentSettings,
@@ -615,18 +764,36 @@ func (c *liandongClient) doAuthenticatedJSON(
 		return 0, nil, "", errors.New("liandong merchant token is not configured")
 	}
 	statusCode, responseBody, err := c.doJSON(ctx, http.MethodPost, path, body, token)
-	if err != nil {
-		return 0, nil, token, &liandongQueryError{systemic: true, err: err}
+	unauthorized := err == nil && liandongUnauthorizedResponse(statusCode, responseBody)
+	orderQueryFailed := false
+	if path == liandongOrderListPath {
+		orderQueryFailed = err != nil || statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices
+		if !orderQueryFailed {
+			_, parseErr := parseLiandongOrderRecords(responseBody)
+			orderQueryFailed = parseErr != nil
+		}
 	}
-	if !liandongUnauthorizedResponse(statusCode, responseBody) {
+	if !unauthorized && !orderQueryFailed {
+		if err != nil {
+			return 0, nil, token, &liandongQueryError{systemic: true, err: err}
+		}
 		return statusCode, responseBody, token, nil
 	}
 	if settingsSnapshot.AuthMode != setting.LiandongAuthModeCredentials {
+		if err != nil {
+			return 0, nil, token, &liandongQueryError{systemic: true, err: err}
+		}
+		if !unauthorized {
+			return statusCode, responseBody, token, nil
+		}
 		return statusCode, responseBody, token, &liandongQueryError{
 			statusCode: http.StatusUnauthorized,
 			systemic:   true,
 			err:        errors.New("liandong authentication failed"),
 		}
+	}
+	if ctx.Err() != nil {
+		return 0, nil, token, &liandongQueryError{systemic: true, err: ctx.Err()}
 	}
 	refreshed, err := c.refreshMerchantToken(ctx, token)
 	if err != nil {
@@ -1615,6 +1782,9 @@ func createLiandongPayment(
 	order.ProviderTradeNo = &providerTradeNo
 	order.PaymentStatus = model.LiandongPaymentStatusPending
 	order.NextCheckAt = 0
+	if latestSettings.PaymentProbeEnabled {
+		scheduleLiandongPaymentProbe(order)
+	}
 	WakeSystemTaskRunner()
 	view := LiandongOrderView(order)
 	return &view, nil
@@ -2105,6 +2275,111 @@ func generateLiandongContact() (string, error) {
 		digits[index] = byte(value.Int64()) + '0'
 	}
 	return string(digits), nil
+}
+
+func scheduleLiandongPaymentProbe(order *model.LiandongOrder) {
+	if order == nil || order.ProviderTradeNo == nil {
+		return
+	}
+	localTradeNo := order.LocalTradeNo
+	productName := order.ProductNameSnapshot
+	providerTradeNo := *order.ProviderTradeNo
+	gopool.Go(func() {
+		if err := runLiandongPaymentProbeForCreatedOrder(
+			context.Background(),
+			localTradeNo,
+			productName,
+			providerTradeNo,
+		); err != nil {
+			common.SysError(fmt.Sprintf(
+				"liandong payment probe failed for local order %s: %v",
+				localTradeNo,
+				err,
+			))
+		}
+	})
+}
+
+func runLiandongPaymentProbeForCreatedOrder(
+	ctx context.Context,
+	localTradeNo string,
+	productName string,
+	providerTradeNo string,
+) error {
+	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
+	if err != nil {
+		return err
+	}
+	if !settingsSnapshot.Enabled || !settingsSnapshot.PaymentProbeEnabled {
+		return nil
+	}
+
+	probeErr := newLiandongClientWithSettings(settingsSnapshot).probePaymentPage(
+		ctx,
+		providerTradeNo,
+		settingsSnapshot,
+	)
+	if probeErr == nil {
+		return nil
+	}
+
+	latestSettings, settingsErr := model.GetLiandongPaymentSettingsFromDB()
+	if settingsErr != nil {
+		return errors.Join(probeErr, settingsErr)
+	}
+	if !latestSettings.Enabled || !latestSettings.PaymentProbeEnabled {
+		return nil
+	}
+
+	diagnostic := sanitizeLiandongDiagnostic(
+		probeErr.Error(),
+		settingsSnapshot.JUUID,
+		settingsSnapshot.Username,
+		settingsSnapshot.Password,
+		settingsSnapshot.MerchantToken,
+		settingsSnapshot.ProxyUsername,
+		settingsSnapshot.ProxyPassword,
+		latestSettings.JUUID,
+		latestSettings.Username,
+		latestSettings.Password,
+		latestSettings.MerchantToken,
+		latestSettings.ProxyUsername,
+		latestSettings.ProxyPassword,
+	)
+	if diagnostic == "" {
+		diagnostic = "payment QR page probe failed"
+	}
+
+	receiver := strings.TrimSpace(latestSettings.PaymentProbeAlertEmail)
+	if receiver == "" {
+		return errors.New(diagnostic)
+	}
+	subject := fmt.Sprintf("[%s] 卡网支付二维码接口异常", common.SystemName)
+	content := fmt.Sprintf(
+		"<p>卡网支付二维码接口探测失败。</p>"+
+			"<p>Card marketplace payment QR probe failed after a real order was created.</p>"+
+			"<ul><li>时间 / Time: %s</li><li>本地订单 / Local order: %s</li>"+
+			"<li>商品 / Product: %s</li><li>接口地址 / Base URL: %s</li>"+
+			"<li>代理 / Proxy: %t</li><li>错误 / Error: %s</li></ul>",
+		time.Now().Format(time.RFC3339),
+		html.EscapeString(localTradeNo),
+		html.EscapeString(productName),
+		html.EscapeString(settingsSnapshot.BaseURL),
+		settingsSnapshot.ProxyEnabled,
+		html.EscapeString(diagnostic),
+	)
+	if err := common.SendEmail(subject, receiver, content); err != nil {
+		common.SysError(fmt.Sprintf(
+			"failed to send liandong payment probe alert to %s: %v",
+			common.MaskEmail(receiver),
+			err,
+		))
+		return errors.Join(
+			errors.New(diagnostic),
+			errors.New("payment probe alert email could not be sent"),
+		)
+	}
+	return errors.New(diagnostic)
 }
 
 func RunLiandongReconcileOnce(ctx context.Context) (map[string]int, error) {

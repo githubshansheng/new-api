@@ -37,6 +37,7 @@ type liandongCreateOrderRequest struct {
 
 type liandongSubscriptionSpec struct {
 	Title                   string `json:"title"`
+	Subtitle                string `json:"subtitle"`
 	DurationUnit            string `json:"duration_unit"`
 	DurationValue           int    `json:"duration_value"`
 	CustomSeconds           int64  `json:"custom_seconds"`
@@ -49,6 +50,7 @@ type liandongSubscriptionSpec struct {
 type liandongPublicProduct struct {
 	ID                  int                       `json:"id"`
 	BusinessType        string                    `json:"business_type"`
+	GoodsType           string                    `json:"goods_type"`
 	Name                string                    `json:"name"`
 	QuotaAmount         int64                     `json:"quota_amount"`
 	PlanID              int                       `json:"plan_id"`
@@ -146,6 +148,7 @@ func ListLiandongProducts(c *gin.Context) {
 		view := liandongPublicProduct{
 			ID:                  product.ID,
 			BusinessType:        product.BusinessType,
+			GoodsType:           product.GoodsType,
 			Name:                product.Name,
 			QuotaAmount:         product.QuotaAmount,
 			PlanID:              product.PlanID,
@@ -253,6 +256,8 @@ type liandongSettingsUpdateRequest struct {
 	ClientPollIntervalSeconds *int    `json:"client_poll_interval_seconds"`
 	ReconcileBatchSize        *int    `json:"reconcile_batch_size"`
 	PaymentTimeoutMinutes     *int    `json:"payment_timeout_minutes"`
+	PaymentProbeEnabled       *bool   `json:"payment_probe_enabled"`
+	PaymentProbeAlertEmail    *string `json:"payment_probe_alert_email"`
 	JUUID                     *string `json:"juuid"`
 	AuthMode                  *string `json:"auth_mode"`
 	Username                  *string `json:"username"`
@@ -299,6 +304,8 @@ func GetLiandongSettings(c *gin.Context) {
 		"client_poll_interval_seconds": settingsSnapshot.ClientPollIntervalSeconds,
 		"reconcile_batch_size":         settingsSnapshot.ReconcileBatchSize,
 		"payment_timeout_minutes":      settingsSnapshot.PaymentTimeoutMinutes,
+		"payment_probe_enabled":        settingsSnapshot.PaymentProbeEnabled,
+		"payment_probe_alert_email":    settingsSnapshot.PaymentProbeAlertEmail,
 		"juuid":                        settingsSnapshot.JUUID,
 		"auth_mode":                    settingsSnapshot.AuthMode,
 		"username_configured":          strings.TrimSpace(settingsSnapshot.Username) != "",
@@ -349,6 +356,7 @@ func UpdateLiandongSettings(c *gin.Context) {
 	setBool("LiandongFulfillEnabled", req.FulfillEnabled, &updated.FulfillEnabled)
 	setBool("LiandongIframeEnabled", req.IframeEnabled, &updated.IframeEnabled)
 	setBool("LiandongProxyEnabled", req.ProxyEnabled, &updated.ProxyEnabled)
+	setBool("LiandongPaymentProbeEnabled", req.PaymentProbeEnabled, &updated.PaymentProbeEnabled)
 
 	proxyCredentialsChanged := false
 	if req.BaseURL != nil {
@@ -468,6 +476,15 @@ func UpdateLiandongSettings(c *gin.Context) {
 		updated.PaymentTimeoutMinutes = *req.PaymentTimeoutMinutes
 		values["LiandongPaymentTimeoutMinutes"] = strconv.Itoa(*req.PaymentTimeoutMinutes)
 	}
+	if req.PaymentProbeAlertEmail != nil {
+		email := strings.TrimSpace(*req.PaymentProbeAlertEmail)
+		if email != "" && (len(email) > 254 || common.Validate.Var(email, "email") != nil) {
+			common.ApiErrorMsg(c, "Payment probe alert email is invalid")
+			return
+		}
+		updated.PaymentProbeAlertEmail = email
+		values["LiandongPaymentProbeAlertEmail"] = email
+	}
 	if req.JUUID != nil {
 		updated.JUUID = strings.TrimSpace(*req.JUUID)
 		if len(updated.JUUID) > 128 {
@@ -562,7 +579,7 @@ func UpdateLiandongSettings(c *gin.Context) {
 		common.ApiErrorMsg(c, "JUUID is required before order creation can be enabled")
 		return
 	}
-	if updated.Enabled && updated.ReconcileEnabled {
+	if updated.Enabled && (updated.ReconcileEnabled || updated.PaymentProbeEnabled) {
 		if updated.AuthMode == setting.LiandongAuthModeCredentials {
 			if updated.Username == "" || updated.Password == "" {
 				common.ApiErrorMsg(c, "Username and password are required for credentials mode")
@@ -572,6 +589,12 @@ func UpdateLiandongSettings(c *gin.Context) {
 			common.ApiErrorMsg(c, "Merchant token is required for manual token mode")
 			return
 		}
+	}
+	if updated.PaymentProbeEnabled &&
+		updated.PaymentProbeAlertEmail == "" &&
+		!(req.Enabled != nil && !*req.Enabled) {
+		common.ApiErrorMsg(c, "Payment probe alert email is required when monitoring is enabled")
+		return
 	}
 	if updated.ProxyEnabled {
 		if updated.ProxyURL == "" {
@@ -747,6 +770,25 @@ func RootUpdateLiandongProduct(c *gin.Context) {
 	}
 	recordManageAudit(c, "liandong.product.update", map[string]interface{}{"product_id": product.ID})
 	common.ApiSuccess(c, makeLiandongRootProductView(product, summaries[id]))
+}
+
+func RootDeleteLiandongProduct(c *gin.Context) {
+	if !requirePaymentCompliance(c) {
+		return
+	}
+	productID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || productID <= 0 {
+		common.ApiErrorMsg(c, "Invalid product ID")
+		return
+	}
+	if err := model.DeleteLiandongProduct(productID); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "liandong.product.delete", map[string]interface{}{
+		"product_id": productID,
+	})
+	common.ApiSuccess(c, nil)
 }
 
 func validateLiandongProductTarget(product *model.LiandongProduct) error {
@@ -1099,6 +1141,7 @@ func getLiandongSubscriptionSpec(planID int) *liandongSubscriptionSpec {
 	}
 	return &liandongSubscriptionSpec{
 		Title:                   plan.Title,
+		Subtitle:                plan.Subtitle,
 		DurationUnit:            plan.DurationUnit,
 		DurationValue:           plan.DurationValue,
 		CustomSeconds:           plan.CustomSeconds,
@@ -1113,7 +1156,9 @@ func liandongInventoryLevel(
 	product *model.LiandongProduct,
 	summary model.LiandongInventorySummary,
 ) string {
-	if product == nil || product.InventoryMode != model.LiandongInventoryModeRedemptionCode {
+	if product == nil ||
+		product.GoodsType != "card" ||
+		product.InventoryMode != model.LiandongInventoryModeRedemptionCode {
 		return "unlimited"
 	}
 	if product.InventoryCapacity <= 0 || summary.Available <= 0 {

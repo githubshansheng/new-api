@@ -21,6 +21,7 @@ import {
   Clock3,
   ExternalLink,
   Loader2,
+  PackageOpen,
   QrCode,
   RefreshCw,
   TriangleAlert,
@@ -33,11 +34,20 @@ import { Dialog } from '@/components/dialog'
 import { StatusBadge, type StatusVariant } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { localizeLiandongMessage } from '@/lib/liandong-payment'
+import {
+  formatLiandongAmount,
+  formatLiandongQuota,
+  localizeLiandongMessage,
+} from '@/lib/liandong-payment'
 import {
   liandongFulfillmentStatusLabel,
   liandongPaymentStatusLabel,
 } from '@/lib/liandong-status'
+import {
+  formatDuration,
+  formatResetPeriod,
+} from '@/features/subscriptions/lib/format'
+import type { SubscriptionPlan } from '@/features/subscriptions/types'
 
 import {
   closeLiandongOrderForUser,
@@ -122,6 +132,7 @@ export function LiandongPaymentDialog({
   const [closing, setClosing] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null)
+  const [thumbnailFailed, setThumbnailFailed] = useState(false)
   const [error, setError] = useState('')
   const successHandledRef = useRef(false)
   const closeRequestedRef = useRef(false)
@@ -130,10 +141,33 @@ export function LiandongPaymentDialog({
   const createAttemptRef = useRef<number | null>(null)
   const createSessionRef = useRef(0)
   const productId = product?.id
+  const subscriptionPlan: Partial<SubscriptionPlan> | null =
+    product?.subscription
+      ? {
+          title: product.subscription.title,
+          subtitle: product.subscription.subtitle,
+          duration_unit:
+            product.subscription
+              .duration_unit as SubscriptionPlan['duration_unit'],
+          duration_value: product.subscription.duration_value,
+          custom_seconds: product.subscription.custom_seconds,
+          total_amount: product.subscription.total_amount,
+          quota_reset_period:
+            product.subscription
+              .quota_reset_period as SubscriptionPlan['quota_reset_period'],
+          quota_reset_custom_seconds:
+            product.subscription.quota_reset_custom_seconds,
+          upgrade_group: product.subscription.upgrade_group,
+        }
+      : null
 
   useEffect(() => {
     orderRef.current = order
   }, [order])
+
+  useEffect(() => {
+    setThumbnailFailed(false)
+  }, [product?.thumbnail_url])
 
   const handleFulfilled = useCallback(
     async (nextOrder: LiandongPaymentView) => {
@@ -396,8 +430,7 @@ export function LiandongPaymentDialog({
           {t('Liandong Payment')}
         </span>
       }
-      description={product?.name}
-      contentClassName='max-sm:w-[calc(100vw-1.5rem)] sm:max-w-xl'
+      contentClassName='max-sm:w-[calc(100vw-1.5rem)] sm:max-w-2xl'
       bodyClassName='space-y-4'
       contentHeight={showIframe ? 'min(66vh, 640px)' : 'auto'}
       footer={
@@ -429,6 +462,95 @@ export function LiandongPaymentDialog({
         </div>
       }
     >
+      {product && (
+        <div className='flex min-w-0 items-start gap-3 rounded-md border p-3'>
+          <div className='bg-muted relative h-20 w-20 shrink-0 overflow-hidden rounded-md border sm:h-24 sm:w-24'>
+            {product.thumbnail_url && !thumbnailFailed ? (
+              <img
+                src={product.thumbnail_url}
+                alt={product.name}
+                className='h-full w-full object-cover'
+                onError={() => setThumbnailFailed(true)}
+              />
+            ) : (
+              <div className='text-muted-foreground flex h-full w-full items-center justify-center'>
+                <PackageOpen className='h-8 w-8' />
+              </div>
+            )}
+          </div>
+          <div className='min-w-0 flex-1'>
+            <div className='flex flex-wrap items-start justify-between gap-x-3 gap-y-1'>
+              <div className='min-w-0'>
+                <p className='font-medium break-words'>{product.name}</p>
+                {product.subscription?.subtitle && (
+                  <p className='text-muted-foreground mt-0.5 text-xs break-words'>
+                    {product.subscription.subtitle}
+                  </p>
+                )}
+              </div>
+              <p className='text-primary shrink-0 font-semibold'>
+                {formatLiandongAmount(
+                  product.currency,
+                  product.expected_amount_minor
+                )}
+              </p>
+            </div>
+
+            <dl className='mt-2 grid min-w-0 gap-x-4 gap-y-1 text-xs sm:grid-cols-2'>
+              {product.business_type === 'quota' ? (
+                <div className='min-w-0'>
+                  <dt className='text-muted-foreground'>{t('Total Quota')}</dt>
+                  <dd className='break-words'>
+                    {formatLiandongQuota(product.quota_amount)}
+                  </dd>
+                </div>
+              ) : (
+                subscriptionPlan && (
+                  <>
+                    <div className='min-w-0'>
+                      <dt className='text-muted-foreground'>
+                        {t('Validity Period')}
+                      </dt>
+                      <dd className='break-words'>
+                        {formatDuration(subscriptionPlan, t)}
+                      </dd>
+                    </div>
+                    <div className='min-w-0'>
+                      <dt className='text-muted-foreground'>
+                        {t('Total Quota')}
+                      </dt>
+                      <dd className='break-words'>
+                        {product.subscription?.total_amount
+                          ? formatLiandongQuota(
+                              product.subscription.total_amount
+                            )
+                          : t('Unlimited')}
+                      </dd>
+                    </div>
+                    <div className='min-w-0'>
+                      <dt className='text-muted-foreground'>
+                        {t('Quota Reset')}
+                      </dt>
+                      <dd className='break-words'>
+                        {formatResetPeriod(subscriptionPlan, t)}
+                      </dd>
+                    </div>
+                    <div className='min-w-0'>
+                      <dt className='text-muted-foreground'>
+                        {t('Upgrade Group')}
+                      </dt>
+                      <dd className='break-words'>
+                        {product.subscription?.upgrade_group || t('No change')}
+                      </dd>
+                    </div>
+                  </>
+                )
+              )}
+            </dl>
+          </div>
+        </div>
+      )}
+
       {creating && (
         <div className='text-muted-foreground flex min-h-40 items-center justify-center gap-2 text-sm'>
           <Loader2 className='h-5 w-5 animate-spin' />

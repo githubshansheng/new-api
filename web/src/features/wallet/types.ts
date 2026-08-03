@@ -70,6 +70,7 @@ export type LiandongInventoryLevel =
 
 export interface LiandongSubscriptionSpec {
   title: string
+  subtitle: string
   duration_unit: string
   duration_value: number
   custom_seconds: number
@@ -82,6 +83,7 @@ export interface LiandongSubscriptionSpec {
 export interface LiandongProduct {
   id: number
   business_type: LiandongBusinessType
+  goods_type: string
   name: string
   quota_amount: number
   plan_id: number

@@ -49,6 +49,7 @@ var (
 	ErrLiandongContactConflict      = errors.New("liandong contact already exists")
 	ErrLiandongInventoryUnavailable = errors.New("liandong product inventory is unavailable")
 	ErrLiandongInventoryCapacity    = errors.New("liandong product inventory capacity exceeded")
+	ErrLiandongProductInUse         = errors.New("liandong product has active orders")
 )
 
 type LiandongProduct struct {
@@ -265,6 +266,8 @@ func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error)
 		"LiandongClientPollIntervalSeconds",
 		"LiandongReconcileBatchSize",
 		"LiandongPaymentTimeoutMinutes",
+		"LiandongPaymentProbeEnabled",
+		"LiandongPaymentProbeAlertEmail",
 		"LiandongJUUID",
 		"LiandongAuthMode",
 		"LiandongUsername",
@@ -336,6 +339,10 @@ func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error)
 				minutes <= setting.MaxLiandongPaymentTimeoutMinutes {
 				settingsSnapshot.PaymentTimeoutMinutes = minutes
 			}
+		case "LiandongPaymentProbeEnabled":
+			settingsSnapshot.PaymentProbeEnabled = option.Value == "true"
+		case "LiandongPaymentProbeAlertEmail":
+			settingsSnapshot.PaymentProbeAlertEmail = strings.TrimSpace(option.Value)
 		case "LiandongJUUID":
 			settingsSnapshot.JUUID = strings.TrimSpace(option.Value)
 		case "LiandongAuthMode":
@@ -576,6 +583,10 @@ func ValidateLiandongProduct(product *LiandongProduct) error {
 	case "article", "card", "resource", "equity":
 	default:
 		return errors.New("invalid goods type")
+	}
+	if product.GoodsType != "card" {
+		product.InventoryMode = LiandongInventoryModeUnlimited
+		product.InventoryCapacity = 0
 	}
 	if product.InventoryMode == "" {
 		product.InventoryMode = LiandongInventoryModeUnlimited

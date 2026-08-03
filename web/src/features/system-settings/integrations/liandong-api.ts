@@ -72,6 +72,16 @@ export async function updateLiandongProduct(
   return response.data
 }
 
+export async function deleteLiandongProduct(
+  productId: number
+): Promise<LiandongApiResponse> {
+  const response = await api.delete(
+    `/api/option/liandong/products/${productId}`,
+    { skipBusinessError: true }
+  )
+  return response.data
+}
+
 export async function listLiandongOrders(
   page: number,
   pageSize: number,

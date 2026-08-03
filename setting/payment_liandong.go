@@ -47,6 +47,8 @@ type LiandongPaymentSettings struct {
 	ClientPollIntervalSeconds int
 	ReconcileBatchSize        int
 	PaymentTimeoutMinutes     int
+	PaymentProbeEnabled       bool
+	PaymentProbeAlertEmail    string
 	JUUID                     string
 	AuthMode                  string
 	Username                  string

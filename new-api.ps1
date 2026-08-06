@@ -17,6 +17,7 @@ $BuildDir = Join-Path $RootDir "build"
 $RunDir = Join-Path $RootDir ".run"
 $LogDir = Join-Path $RootDir "logs"
 $BinaryPath = Join-Path $BuildDir "new-api.exe"
+$NextBinaryPath = Join-Path $BuildDir "new-api.next.exe"
 $PidFile = Join-Path $RunDir "new-api.pid"
 $PortFile = Join-Path $RunDir "new-api.port"
 $StdoutLog = Join-Path $RunDir "new-api.stdout.log"
@@ -252,8 +253,13 @@ function Wait-ForStartup {
 }
 
 function Build-App {
-    if (Get-ManagedProcess) {
-        throw "The service is running. Use 'rebuild' to stop, build, and start it."
+    param(
+        [string]$OutputPath = $BinaryPath,
+        [switch]$AllowRunning
+    )
+
+    if (-not $AllowRunning -and (Get-ManagedProcess)) {
+        throw "The service is running. Use 'rebuild' to build first, then replace and restart it."
     }
 
     Require-Command "bun"
@@ -286,12 +292,12 @@ function Build-App {
     Push-Location $RootDir
     try {
         $ldflags = "-s -w -X github.com/QuantumNous/new-api/common.Version=$version"
-        Invoke-Native { go build -trimpath -ldflags $ldflags -o $BinaryPath . } "Backend build failed"
+        Invoke-Native { go build -trimpath -ldflags $ldflags -o $OutputPath . } "Backend build failed"
     } finally {
         Pop-Location
     }
 
-    Write-Host "Build complete: $BinaryPath"
+    Write-Host "Build complete: $OutputPath"
 }
 
 function Start-App {
@@ -412,7 +418,7 @@ Commands:
   start     Start the existing binary; build first when it is missing.
   stop      Stop the managed background process.
   restart   Restart without rebuilding.
-  rebuild   Stop, rebuild everything, and start.
+  rebuild   Build while serving, then stop, replace, and start.
   running   Return success when the managed process exists.
   status    Show process and HTTP health status.
   logs      Follow stdout and stderr logs.
@@ -454,8 +460,11 @@ try {
                     $RequestedPort = Get-RunningPort
                 }
             }
+            Remove-Item -LiteralPath $NextBinaryPath -Force -ErrorAction SilentlyContinue
+            Build-App -OutputPath $NextBinaryPath -AllowRunning
             Stop-App
-            Build-App
+            Write-Step "Activating new build"
+            Move-Item -LiteralPath $NextBinaryPath -Destination $BinaryPath -Force
             Start-App
         }
         "running" {

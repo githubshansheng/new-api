@@ -15,6 +15,7 @@ BUILD_DIR="${ROOT_DIR}/build"
 RUN_DIR="${ROOT_DIR}/.run"
 LOG_DIR="${ROOT_DIR}/logs"
 BINARY_PATH="${BUILD_DIR}/new-api"
+NEXT_BINARY_PATH="${BUILD_DIR}/new-api.next"
 PID_FILE="${RUN_DIR}/new-api.pid"
 PORT_FILE="${RUN_DIR}/new-api.port"
 STARTTIME_FILE="${RUN_DIR}/new-api.starttime"
@@ -273,8 +274,11 @@ running_port() {
 }
 
 build_app() {
-  if managed_pid >/dev/null 2>&1; then
-    printf "ERROR: The service is running. Use 'rebuild' to stop, build, and start it.\n" >&2
+  local output_path="${1:-${BINARY_PATH}}"
+  local allow_running="${2:-false}"
+
+  if [[ "${allow_running}" != "true" ]] && managed_pid >/dev/null 2>&1; then
+    printf "ERROR: The service is running. Use 'rebuild' to build first, then replace and restart it.\n" >&2
     exit 1
   fi
 
@@ -304,11 +308,11 @@ build_app() {
     go build \
       -trimpath \
       -ldflags "-s -w -X github.com/QuantumNous/new-api/common.Version=${version}" \
-      -o "${BINARY_PATH}" \
+      -o "${output_path}" \
       .
   )
 
-  printf 'Build complete: %s\n' "${BINARY_PATH}"
+  printf 'Build complete: %s\n' "${output_path}"
 }
 
 wait_for_startup() {
@@ -506,7 +510,7 @@ Commands:
   start     Start the existing binary; build first when it is missing.
   stop      Gracefully stop the managed background process.
   restart   Restart without rebuilding.
-  rebuild   Stop, rebuild everything, and start.
+  rebuild   Build while serving, then stop, replace, and start.
   status    Show process and HTTP health status.
   logs      Follow stdout and stderr logs.
 
@@ -541,8 +545,11 @@ case "${ACTION}" in
     if [[ -z "${REQUESTED_PORT}" ]] && managed_pid >/dev/null 2>&1; then
       REQUESTED_PORT="$(running_port)"
     fi
+    rm -f -- "${NEXT_BINARY_PATH}"
+    build_app "${NEXT_BINARY_PATH}" true
     stop_app
-    build_app
+    log_step "Activating new build"
+    mv -f -- "${NEXT_BINARY_PATH}" "${BINARY_PATH}"
     start_app
     ;;
   status)

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,30 +33,84 @@ import (
 )
 
 const (
-	liandongBaseURL               = setting.DefaultLiandongBaseURL
-	liandongCreatePath            = "/shopApi/Pay/order"
-	liandongPaymentPath           = "/shopApi/Pay/payment"
-	liandongOrderListPath         = "/merchantApi/order/list"
-	liandongGoodsListPath         = "/merchantApi/Goods/list"
-	liandongLoginPath             = "/merchantApi/user/login"
-	liandongMaxBodyBytes          = 1 << 20
-	liandongDialTimeout           = 10 * time.Second
-	liandongTLSHandshakeTimeout   = 15 * time.Second
-	liandongResponseHeaderTimeout = 20 * time.Second
-	liandongRequestTimeout        = 30 * time.Second
-	liandongMaxDiagnosticRunes    = 256
-	liandongReconcileBatchSize    = 100
-	liandongOperationLeaseTTL     = 90 * time.Second
-	liandongOperationWait         = 15 * time.Second
-	liandongOperationRetry        = 100 * time.Millisecond
+	liandongBaseURL                              = setting.DefaultLiandongBaseURL
+	liandongCreatePath                           = "/shopApi/Pay/order"
+	liandongPaymentPath                          = "/shopApi/Pay/payment"
+	liandongOrderListPath                        = "/merchantApi/order/list"
+	liandongGoodsListPath                        = "/merchantApi/Goods/list"
+	liandongLoginPath                            = "/merchantApi/user/login"
+	liandongMaxBodyBytes                         = 1 << 20
+	liandongDialTimeout                          = 10 * time.Second
+	liandongTLSHandshakeTimeout                  = 15 * time.Second
+	liandongResponseHeaderTimeout                = 20 * time.Second
+	liandongRequestTimeout                       = 30 * time.Second
+	liandongMaxDiagnosticRunes                   = 256
+	liandongMaxMonitorPayloadRunes               = 4096
+	liandongReconcileBatchSize                   = 100
+	liandongOperationLeaseTTL                    = 90 * time.Second
+	liandongOperationWait                        = 15 * time.Second
+	liandongOperationRetry                       = 100 * time.Millisecond
+	liandongOrderQueryFailuresBeforeLoginRefresh = 3
 )
 
 var liandongTradeNoPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{6,128}$`)
+var liandongACWArgumentPattern = regexp.MustCompile(`(?i)\barg1\s*=\s*['"]([0-9a-f]{40})['"]`)
+var liandongACWPermutationPattern = regexp.MustCompile(`(?i)for\s*\(\s*var\s+m\s*=\s*\[([^]]+)\]\s*,\s*p\s*=`)
 var liandongSensitiveDiagnosticValuePattern = regexp.MustCompile(
 	`(?i)(["']?(?:merchant[-_ ]?token|token|password|username|juuid|contact|goods[-_ ]?key)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,\s;&]+)`,
 )
 var liandongAuthRefreshMu sync.Mutex
 var liandongCookieJars sync.Map
+
+type liandongCookieContext struct {
+	jar                    http.CookieJar
+	origin                 *url.URL
+	orderQueryFailureState liandongOrderQueryFailureState
+}
+
+type liandongOrderQueryFailureState struct {
+	mu       sync.Mutex
+	failures int
+}
+
+func (s *liandongOrderQueryFailureState) recordFailure() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failures++
+	return s.failures > liandongOrderQueryFailuresBeforeLoginRefresh
+}
+
+func (s *liandongOrderQueryFailureState) reset() {
+	s.mu.Lock()
+	s.failures = 0
+	s.mu.Unlock()
+}
+
+func (c *liandongCookieContext) SetCookies(requestURL *url.URL, cookies []*http.Cookie) {
+	if requestURL == nil || !strings.EqualFold(requestURL.Scheme, c.origin.Scheme) ||
+		!strings.EqualFold(requestURL.Host, c.origin.Host) {
+		return
+	}
+	normalized := make([]*http.Cookie, 0, len(cookies))
+	for _, cookie := range cookies {
+		if cookie == nil {
+			continue
+		}
+		copy := *cookie
+		copy.Domain = ""
+		copy.Path = "/"
+		normalized = append(normalized, &copy)
+	}
+	c.jar.SetCookies(c.origin, normalized)
+}
+
+func (c *liandongCookieContext) Cookies(requestURL *url.URL) []*http.Cookie {
+	if requestURL == nil || !strings.EqualFold(requestURL.Scheme, c.origin.Scheme) ||
+		!strings.EqualFold(requestURL.Host, c.origin.Host) {
+		return nil
+	}
+	return c.jar.Cookies(c.origin)
+}
 
 type LiandongPaymentView struct {
 	LocalTradeNo              string `json:"local_trade_no"`
@@ -73,10 +128,133 @@ type LiandongPaymentView struct {
 	ClientPollIntervalSeconds int    `json:"client_poll_interval_seconds"`
 }
 
+type LiandongPaymentPage struct {
+	HTML        string `json:"html,omitempty"`
+	RedirectURL string `json:"redirect_url,omitempty"`
+}
+
 type liandongClient struct {
-	httpClient *http.Client
-	baseURL    string
-	configErr  error
+	httpClient                  *http.Client
+	baseURL                     string
+	configErr                   error
+	orderQueryFailureState      *liandongOrderQueryFailureState
+	localOrderQueryFailureState liandongOrderQueryFailureState
+}
+
+func (c *liandongClient) paymentStatusFailureState() *liandongOrderQueryFailureState {
+	if c.orderQueryFailureState != nil {
+		return c.orderQueryFailureState
+	}
+	return &c.localOrderQueryFailureState
+}
+
+type liandongMonitorContextKey struct{}
+
+type liandongMonitorMetadata struct {
+	Source    string
+	Reference string
+}
+
+func withLiandongMonitor(ctx context.Context, source string, reference string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, liandongMonitorContextKey{}, liandongMonitorMetadata{
+		Source:    source,
+		Reference: reference,
+	})
+}
+
+func liandongMonitorOperation(path string) string {
+	switch path {
+	case liandongCreatePath:
+		return "create_order"
+	case liandongPaymentPath:
+		return "payment_page_probe"
+	case liandongOrderListPath:
+		return "query_orders"
+	case liandongGoodsListPath:
+		return "query_goods"
+	case liandongLoginPath:
+		return "login"
+	default:
+		return "proxy_validation"
+	}
+}
+
+func recordLiandongUpstreamCall(
+	ctx context.Context,
+	method string,
+	path string,
+	statusCode int,
+	duration time.Duration,
+	success bool,
+	diagnostic string,
+	requestBody []byte,
+	responseBody []byte,
+	secrets ...string,
+) {
+	metadata := liandongMonitorMetadata{Source: "unspecified"}
+	if ctx != nil {
+		if configured, ok := ctx.Value(liandongMonitorContextKey{}).(liandongMonitorMetadata); ok {
+			metadata = configured
+		}
+	}
+	if metadata.Source == "" {
+		metadata.Source = "unspecified"
+	}
+	if err := model.RecordLiandongUpstreamCall(model.LiandongUpstreamCall{
+		Source:     metadata.Source,
+		Reference:  metadata.Reference,
+		Operation:  liandongMonitorOperation(path),
+		Method:     method,
+		Path:       path,
+		StatusCode: statusCode,
+		Success:    success,
+		DurationMS: duration.Milliseconds(),
+		RequestBody: sanitizeLiandongMonitorPayload(
+			requestBody,
+			secrets...,
+		),
+		ResponseBody: sanitizeLiandongMonitorPayload(
+			responseBody,
+			secrets...,
+		),
+		Error: diagnostic,
+	}); err != nil {
+		common.SysError("failed to record card marketplace upstream call: " + err.Error())
+	}
+}
+
+func classifyLiandongUpstreamCall(
+	baseURL string,
+	path string,
+	statusCode int,
+	responseBody []byte,
+	requestErr error,
+	secrets ...string,
+) (bool, string) {
+	if requestErr != nil {
+		return false, sanitizeLiandongDiagnostic(requestErr.Error(), secrets...)
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return false, fmt.Sprintf("provider returned HTTP %d", statusCode)
+	}
+	var err error
+	switch path {
+	case liandongCreatePath:
+		_, err = parseLiandongCreateTradeNoForBaseURL(responseBody, baseURL)
+	case liandongOrderListPath:
+		_, err = parseLiandongOrderRecords(responseBody)
+	case liandongGoodsListPath:
+		_, err = parseLiandongGoods(responseBody)
+	case liandongLoginPath:
+		_, err = parseLiandongLoginToken(responseBody)
+	}
+	if err != nil {
+		return false, sanitizeLiandongDiagnostic(err.Error(), secrets...)
+	}
+	return true, ""
 }
 
 type liandongCreateError struct {
@@ -263,16 +441,27 @@ func newLiandongClientWithSettings(
 		configErr = err
 	}
 	var cookieJar http.CookieJar
+	var cookieContext *liandongCookieContext
 	if configErr == nil {
 		if sharedJar, ok := liandongCookieJars.Load(baseURL); ok {
-			cookieJar = sharedJar.(http.CookieJar)
+			cookieContext = sharedJar.(*liandongCookieContext)
+			cookieJar = cookieContext
 		} else {
-			newJar, jarErr := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+			standardJar, jarErr := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 			if jarErr != nil {
 				configErr = jarErr
 			} else {
+				newJar := &liandongCookieContext{
+					jar: standardJar,
+					origin: &url.URL{
+						Scheme: parsedBaseURL.Scheme,
+						Host:   parsedBaseURL.Host,
+						Path:   "/",
+					},
+				}
 				sharedJar, _ := liandongCookieJars.LoadOrStore(baseURL, newJar)
-				cookieJar = sharedJar.(http.CookieJar)
+				cookieContext = sharedJar.(*liandongCookieContext)
+				cookieJar = cookieContext
 			}
 		}
 	}
@@ -296,6 +485,10 @@ func newLiandongClientWithSettings(
 	if dialContext != nil {
 		transport.DialContext = dialContext
 	}
+	var orderQueryFailureState *liandongOrderQueryFailureState
+	if cookieContext != nil {
+		orderQueryFailureState = &cookieContext.orderQueryFailureState
+	}
 	return &liandongClient{
 		httpClient: &http.Client{
 			Transport: transport,
@@ -313,8 +506,9 @@ func newLiandongClientWithSettings(
 				return nil
 			},
 		},
-		baseURL:   baseURL,
-		configErr: configErr,
+		baseURL:                baseURL,
+		configErr:              configErr,
+		orderQueryFailureState: orderQueryFailureState,
 	}
 }
 
@@ -386,7 +580,34 @@ func liandongProxyTransport(
 func ValidateLiandongProxy(
 	ctx context.Context,
 	settingsSnapshot setting.LiandongPaymentSettings,
-) error {
+) (validationErr error) {
+	ctx = withLiandongMonitor(ctx, "proxy_validation", "")
+	startedAt := time.Now()
+	statusCode := 0
+	defer func() {
+		success, diagnostic := classifyLiandongUpstreamCall(
+			settingsSnapshot.BaseURL,
+			"/",
+			statusCode,
+			nil,
+			validationErr,
+			settingsSnapshot.ProxyUsername,
+			settingsSnapshot.ProxyPassword,
+		)
+		recordLiandongUpstreamCall(
+			ctx,
+			http.MethodGet,
+			"/",
+			statusCode,
+			time.Since(startedAt),
+			success,
+			diagnostic,
+			nil,
+			nil,
+			settingsSnapshot.ProxyUsername,
+			settingsSnapshot.ProxyPassword,
+		)
+	}()
 	if strings.TrimSpace(settingsSnapshot.ProxyURL) == "" {
 		return errors.New("proxy URL is required")
 	}
@@ -408,6 +629,7 @@ func ValidateLiandongProxy(
 	if err != nil {
 		return classifyLiandongProxyError(err, settingsSnapshot)
 	}
+	statusCode = resp.StatusCode
 	_ = resp.Body.Close()
 	if resp.StatusCode == http.StatusProxyAuthRequired {
 		return errors.New("Proxy authentication failed")
@@ -535,46 +757,151 @@ func (c *liandongClient) probePaymentPage(
 	providerTradeNo string,
 	settingsSnapshot setting.LiandongPaymentSettings,
 ) error {
+	_, err := c.loadPaymentPage(ctx, providerTradeNo, settingsSnapshot)
+	return err
+}
+
+func (c *liandongClient) loadPaymentPage(
+	ctx context.Context,
+	providerTradeNo string,
+	settingsSnapshot setting.LiandongPaymentSettings,
+) (*LiandongPaymentPage, error) {
 	merchantToken := strings.TrimSpace(settingsSnapshot.MerchantToken)
 	if merchantToken == "" && settingsSnapshot.AuthMode == setting.LiandongAuthModeCredentials {
 		refreshed, err := c.refreshMerchantToken(ctx, "")
 		if err != nil {
-			return err
+			return nil, err
 		}
 		merchantToken = refreshed
 	}
 	if merchantToken == "" {
-		return errors.New("liandong merchant token is not configured")
+		return nil, errors.New("liandong merchant token is not configured")
 	}
 
 	resp, body, err := c.requestPaymentPage(ctx, providerTradeNo, merchantToken)
 	if err != nil {
-		return err
+		if settingsSnapshot.AuthMode != setting.LiandongAuthModeCredentials {
+			return nil, err
+		}
+	} else {
+		validationErr := validateLiandongPaymentPageResponse(resp, body)
+		if !liandongUnauthorizedResponse(resp.StatusCode, body) && validationErr == nil {
+			return makeLiandongPaymentPage(resp, body, settingsSnapshot.BaseURL)
+		}
+		if settingsSnapshot.AuthMode != setting.LiandongAuthModeCredentials {
+			if liandongUnauthorizedResponse(resp.StatusCode, body) {
+				return nil, errors.New("liandong authentication failed")
+			}
+			return nil, validationErr
+		}
+	}
+	refreshed, err := c.refreshMerchantToken(ctx, merchantToken)
+	if err != nil {
+		return nil, err
+	}
+	resp, body, err = c.requestPaymentPage(ctx, providerTradeNo, refreshed)
+	if err != nil {
+		return nil, err
 	}
 	if liandongUnauthorizedResponse(resp.StatusCode, body) {
-		if settingsSnapshot.AuthMode != setting.LiandongAuthModeCredentials {
-			return errors.New("liandong authentication failed")
+		return nil, errors.New("liandong authentication failed after token refresh")
+	}
+	if err := validateLiandongPaymentPageResponse(resp, body); err != nil {
+		return nil, err
+	}
+	return makeLiandongPaymentPage(resp, body, settingsSnapshot.BaseURL)
+}
+
+func makeLiandongPaymentPage(
+	resp *http.Response,
+	body []byte,
+	baseURL string,
+) (*LiandongPaymentPage, error) {
+	if resp == nil {
+		return nil, errors.New("payment page returned no response")
+	}
+	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
+		location, err := resp.Location()
+		if err != nil || !location.IsAbs() || !strings.EqualFold(location.Scheme, "https") {
+			return nil, errors.New("payment page returned an invalid redirect")
 		}
-		refreshed, err := c.refreshMerchantToken(ctx, merchantToken)
-		if err != nil {
-			return err
-		}
-		resp, body, err = c.requestPaymentPage(ctx, providerTradeNo, refreshed)
-		if err != nil {
-			return err
-		}
-		if liandongUnauthorizedResponse(resp.StatusCode, body) {
-			return errors.New("liandong authentication failed after token refresh")
+		return &LiandongPaymentPage{RedirectURL: location.String()}, nil
+	}
+
+	normalizedBaseURL, err := setting.NormalizeLiandongBaseURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	baseTag := []byte(`<base href="` + html.EscapeString(strings.TrimRight(normalizedBaseURL, "/")+"/") + `">`)
+	lowerBody := bytes.ToLower(body)
+	if !bytes.Contains(lowerBody, []byte("<base")) {
+		headStart := bytes.Index(lowerBody, []byte("<head"))
+		if headStart >= 0 {
+			if headEnd := bytes.IndexByte(body[headStart:], '>'); headEnd >= 0 {
+				insertAt := headStart + headEnd + 1
+				withBase := make([]byte, 0, len(body)+len(baseTag))
+				withBase = append(withBase, body[:insertAt]...)
+				withBase = append(withBase, baseTag...)
+				withBase = append(withBase, body[insertAt:]...)
+				body = withBase
+			}
+		} else {
+			body = append(baseTag, body...)
 		}
 	}
-	return validateLiandongPaymentPageResponse(resp, body)
+	return &LiandongPaymentPage{HTML: string(body)}, nil
 }
 
 func (c *liandongClient) requestPaymentPage(
 	ctx context.Context,
 	providerTradeNo string,
 	merchantToken string,
-) (*http.Response, []byte, error) {
+) (response *http.Response, responseBody []byte, requestErr error) {
+	startedAt := time.Now()
+	requestBody, _ := common.Marshal(map[string]string{"trade_no": providerTradeNo})
+	defer func() {
+		success := requestErr == nil
+		diagnostic := ""
+		statusCode := 0
+		if response != nil {
+			statusCode = response.StatusCode
+		}
+		if requestErr != nil {
+			diagnostic = sanitizeLiandongDiagnostic(requestErr.Error(), merchantToken)
+		} else if err := validateLiandongPaymentPageResponse(response, responseBody); err != nil {
+			success = false
+			diagnostic = sanitizeLiandongDiagnostic(err.Error(), merchantToken)
+		}
+		recordLiandongUpstreamCall(
+			ctx,
+			http.MethodGet,
+			liandongPaymentPath,
+			statusCode,
+			time.Since(startedAt),
+			success,
+			diagnostic,
+			requestBody,
+			responseBody,
+			merchantToken,
+		)
+	}()
+
+	response, responseBody, requestErr = c.requestPaymentPageOnce(ctx, providerTradeNo, merchantToken)
+	if requestErr != nil || !isLiandongBrowserVerificationPage(responseBody) {
+		return response, responseBody, requestErr
+	}
+	endpoint, endpointErr := liandongEndpointURL(c.baseURL, liandongPaymentPath)
+	if endpointErr != nil || !c.applyLiandongBrowserVerificationCookie(endpoint, responseBody) {
+		return response, responseBody, requestErr
+	}
+	return c.requestPaymentPageOnce(ctx, providerTradeNo, merchantToken)
+}
+
+func (c *liandongClient) requestPaymentPageOnce(
+	ctx context.Context,
+	providerTradeNo string,
+	merchantToken string,
+) (response *http.Response, responseBody []byte, requestErr error) {
 	if c.configErr != nil {
 		return nil, nil, c.configErr
 	}
@@ -617,15 +944,16 @@ func (c *liandongClient) requestPaymentPage(
 	if err != nil {
 		return nil, nil, err
 	}
+	response = resp
 	defer resp.Body.Close()
 
 	limited := io.LimitReader(resp.Body, liandongMaxBodyBytes+1)
 	body, err := io.ReadAll(limited)
 	if err != nil {
-		return nil, nil, err
+		return resp, body, err
 	}
 	if len(body) > liandongMaxBodyBytes {
-		return nil, nil, errors.New("payment page response is too large")
+		return resp, nil, errors.New("payment page response is too large")
 	}
 	return resp, body, nil
 }
@@ -765,21 +1093,32 @@ func (c *liandongClient) doAuthenticatedJSON(
 	}
 	statusCode, responseBody, err := c.doJSON(ctx, http.MethodPost, path, body, token)
 	unauthorized := err == nil && liandongUnauthorizedResponse(statusCode, responseBody)
-	orderQueryFailed := false
-	if path == liandongOrderListPath {
-		orderQueryFailed = err != nil || statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices
-		if !orderQueryFailed {
-			_, parseErr := parseLiandongOrderRecords(responseBody)
-			orderQueryFailed = parseErr != nil
+	authenticatedRequestFailed := false
+	if path == liandongOrderListPath || path == liandongGoodsListPath {
+		authenticatedRequestFailed = err != nil || statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices
+		if !authenticatedRequestFailed {
+			if path == liandongOrderListPath {
+				_, err = parseLiandongOrderRecords(responseBody)
+			} else {
+				_, err = parseLiandongGoods(responseBody)
+			}
+			authenticatedRequestFailed = err != nil
 		}
 	}
-	if !unauthorized && !orderQueryFailed {
+	if !unauthorized && !authenticatedRequestFailed {
 		if err != nil {
 			return 0, nil, token, &liandongQueryError{systemic: true, err: err}
 		}
+		if path == liandongOrderListPath {
+			c.paymentStatusFailureState().reset()
+		}
 		return statusCode, responseBody, token, nil
 	}
-	if settingsSnapshot.AuthMode != setting.LiandongAuthModeCredentials {
+	shouldRefreshLogin := settingsSnapshot.AuthMode == setting.LiandongAuthModeCredentials
+	if shouldRefreshLogin && path == liandongOrderListPath {
+		shouldRefreshLogin = c.paymentStatusFailureState().recordFailure()
+	}
+	if !shouldRefreshLogin {
 		if err != nil {
 			return 0, nil, token, &liandongQueryError{systemic: true, err: err}
 		}
@@ -809,6 +1148,15 @@ func (c *liandongClient) doAuthenticatedJSON(
 			systemic:   true,
 			err:        errors.New("liandong authentication failed after token refresh"),
 		}
+	}
+	if path == liandongOrderListPath {
+		if retryStatus < http.StatusOK || retryStatus >= http.StatusMultipleChoices {
+			return retryStatus, retryBody, refreshed, nil
+		}
+		if _, err := parseLiandongOrderRecords(retryBody); err != nil {
+			return retryStatus, retryBody, refreshed, &liandongQueryError{systemic: true, err: err}
+		}
+		c.paymentStatusFailureState().reset()
 	}
 	return retryStatus, retryBody, refreshed, nil
 }
@@ -868,7 +1216,49 @@ func (c *liandongClient) doJSON(
 	path string,
 	body []byte,
 	merchantToken string,
-) (int, []byte, error) {
+) (statusCode int, responseBody []byte, requestErr error) {
+	startedAt := time.Now()
+	defer func() {
+		success, diagnostic := classifyLiandongUpstreamCall(
+			c.baseURL,
+			path,
+			statusCode,
+			responseBody,
+			requestErr,
+			merchantToken,
+		)
+		recordLiandongUpstreamCall(
+			ctx,
+			method,
+			path,
+			statusCode,
+			time.Since(startedAt),
+			success,
+			diagnostic,
+			body,
+			responseBody,
+			merchantToken,
+		)
+	}()
+
+	statusCode, responseBody, requestErr = c.doJSONOnce(ctx, method, path, body, merchantToken)
+	if requestErr != nil || !isLiandongBrowserVerificationPage(responseBody) {
+		return statusCode, responseBody, requestErr
+	}
+	endpoint, endpointErr := liandongEndpointURL(c.baseURL, path)
+	if endpointErr != nil || !c.applyLiandongBrowserVerificationCookie(endpoint, responseBody) {
+		return statusCode, responseBody, requestErr
+	}
+	return c.doJSONOnce(ctx, method, path, body, merchantToken)
+}
+
+func (c *liandongClient) doJSONOnce(
+	ctx context.Context,
+	method string,
+	path string,
+	body []byte,
+	merchantToken string,
+) (statusCode int, responseBody []byte, requestErr error) {
 	if c.configErr != nil {
 		return 0, nil, c.configErr
 	}
@@ -901,9 +1291,9 @@ func (c *liandongClient) doJSON(
 	defer resp.Body.Close()
 
 	limited := io.LimitReader(resp.Body, liandongMaxBodyBytes+1)
-	responseBody, err := io.ReadAll(limited)
+	responseBody, err = io.ReadAll(limited)
 	if err != nil {
-		return resp.StatusCode, nil, err
+		return resp.StatusCode, responseBody, err
 	}
 	if len(responseBody) > liandongMaxBodyBytes {
 		return resp.StatusCode, nil, errors.New("provider response is too large")
@@ -948,6 +1338,70 @@ func isLiandongBrowserVerificationPage(body []byte) bool {
 	normalized := bytes.ToLower(normalizeLiandongJSONBody(body))
 	return bytes.Contains(normalized, []byte("<script")) &&
 		bytes.Contains(normalized, []byte("var arg1="))
+}
+
+func (c *liandongClient) applyLiandongBrowserVerificationCookie(
+	endpoint string,
+	body []byte,
+) bool {
+	if c == nil || c.httpClient == nil || c.httpClient.Jar == nil {
+		return false
+	}
+	argumentMatch := liandongACWArgumentPattern.FindSubmatch(body)
+	permutationMatch := liandongACWPermutationPattern.FindSubmatch(body)
+	if len(argumentMatch) != 2 || len(permutationMatch) != 2 {
+		return false
+	}
+
+	parts := strings.Split(string(permutationMatch[1]), ",")
+	if len(parts) != 40 {
+		return false
+	}
+	permutation := make([]int, len(parts))
+	seen := make([]bool, len(parts)+1)
+	for index, part := range parts {
+		value, err := strconv.ParseInt(strings.TrimSpace(part), 0, 32)
+		if err != nil || value < 1 || value > int64(len(parts)) || seen[value] {
+			return false
+		}
+		permutation[index] = int(value)
+		seen[value] = true
+	}
+
+	argument := argumentMatch[1]
+	reordered := make([]byte, len(argument))
+	for argumentIndex, character := range argument {
+		for targetIndex, sourcePosition := range permutation {
+			if sourcePosition == argumentIndex+1 {
+				reordered[targetIndex] = character
+				break
+			}
+		}
+	}
+	challenge, err := hex.DecodeString(string(reordered))
+	if err != nil {
+		return false
+	}
+	key, err := hex.DecodeString("3000176000856006061501533003690027800375")
+	if err != nil || len(challenge) != len(key) {
+		return false
+	}
+	for index := range challenge {
+		challenge[index] ^= key[index]
+	}
+
+	requestURL, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	c.httpClient.Jar.SetCookies(requestURL, []*http.Cookie{{
+		Name:    "acw_sc__v2",
+		Value:   hex.EncodeToString(challenge),
+		Path:    "/",
+		Secure:  strings.EqualFold(requestURL.Scheme, "https"),
+		Expires: time.Now().Add(time.Hour),
+	}})
+	return true
 }
 
 func parseLiandongCreateTradeNo(body []byte) (string, error) {
@@ -1252,6 +1706,7 @@ func ListLiandongProviderGoods(
 	goodsType string,
 	name string,
 ) ([]LiandongProviderGoods, error) {
+	ctx = withLiandongMonitor(ctx, "provider_goods", "")
 	goodsType = strings.TrimSpace(goodsType)
 	switch goodsType {
 	case "", "article", "card", "resource", "equity":
@@ -1457,7 +1912,7 @@ func liandongEndpointURL(baseURL string, path string) (string, error) {
 	return parsed.String(), nil
 }
 
-func sanitizeLiandongDiagnostic(message string, secrets ...string) string {
+func sanitizeLiandongText(message string, maxRunes int, secrets ...string) string {
 	redactions := make([]string, 0, len(secrets)*2)
 	seen := make(map[string]struct{}, len(secrets)*2)
 	for _, secret := range secrets {
@@ -1493,10 +1948,75 @@ func sanitizeLiandongDiagnostic(message string, secrets ...string) string {
 	}, sanitized)
 	sanitized = strings.Join(strings.Fields(sanitized), " ")
 	messageRunes := []rune(sanitized)
-	if len(messageRunes) > liandongMaxDiagnosticRunes {
-		sanitized = string(messageRunes[:liandongMaxDiagnosticRunes])
+	if maxRunes > 0 && len(messageRunes) > maxRunes {
+		sanitized = string(messageRunes[:maxRunes])
 	}
 	return sanitized
+}
+
+func sanitizeLiandongDiagnostic(message string, secrets ...string) string {
+	return sanitizeLiandongText(message, liandongMaxDiagnosticRunes, secrets...)
+}
+
+func sanitizeLiandongMonitorPayload(body []byte, secrets ...string) string {
+	normalized := normalizeLiandongJSONBody(body)
+	if len(normalized) == 0 {
+		return ""
+	}
+
+	var payload any
+	if err := common.Unmarshal(normalized, &payload); err == nil {
+		redactLiandongMonitorPayload(payload)
+		if encoded, marshalErr := common.Marshal(payload); marshalErr == nil {
+			normalized = encoded
+		}
+	}
+	return sanitizeLiandongText(
+		string(normalized),
+		liandongMaxMonitorPayloadRunes,
+		secrets...,
+	)
+}
+
+func redactLiandongMonitorPayload(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			if liandongMonitorPayloadKeyIsSensitive(key) {
+				typed[key] = "[redacted]"
+				continue
+			}
+			redactLiandongMonitorPayload(nested)
+		}
+	case []any:
+		for _, nested := range typed {
+			redactLiandongMonitorPayload(nested)
+		}
+	}
+}
+
+func liandongMonitorPayloadKeyIsSensitive(key string) bool {
+	normalized := strings.Map(func(char rune) rune {
+		if char >= 'A' && char <= 'Z' {
+			return char + ('a' - 'A')
+		}
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') {
+			return char
+		}
+		return -1
+	}, key)
+	if strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "cookie") ||
+		strings.Contains(normalized, "secret") {
+		return true
+	}
+	switch normalized {
+	case "username", "account", "passwd", "pwd", "juuid", "contact", "goodskey", "cardkey", "cardpassword", "kami":
+		return true
+	default:
+		return false
+	}
 }
 
 func liandongProviderResponseDiagnostic(body []byte, secrets ...string) string {
@@ -1562,12 +2082,58 @@ func LiandongOrderView(order *model.LiandongOrder) LiandongPaymentView {
 		(order.PaymentStatus == model.LiandongPaymentStatusPending ||
 			order.PaymentStatus == model.LiandongPaymentStatusCreateUnknown) &&
 		order.ProviderTradeNo != nil {
-		view.PaymentURL = liandongPaymentURL(
-			settingsSnapshot.BaseURL,
-			*order.ProviderTradeNo,
-		)
+		view.PaymentURL = "/api/payment/liandong/orders/" +
+			url.PathEscape(order.LocalTradeNo) + "/page"
 	}
 	return view
+}
+
+func LoadLiandongPaymentPageForUser(
+	ctx context.Context,
+	userID int,
+	localTradeNo string,
+) (*LiandongPaymentPage, error) {
+	ctx = withLiandongMonitor(ctx, "user_payment_page", localTradeNo)
+	order, err := model.GetLiandongOrderForUser(userID, localTradeNo)
+	if err != nil {
+		return nil, err
+	}
+	if order.ProviderTradeNo == nil ||
+		(order.PaymentStatus != model.LiandongPaymentStatusPending &&
+			order.PaymentStatus != model.LiandongPaymentStatusCreateUnknown) {
+		return nil, errors.New("payment page is not available for this order")
+	}
+	if order.ExpiresAt > 0 && order.ExpiresAt <= time.Now().Unix() {
+		return nil, errors.New("payment order has expired")
+	}
+
+	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
+	if err != nil {
+		return nil, err
+	}
+	if !settingsSnapshot.Enabled {
+		return nil, errors.New("liandong payment gateway is disabled")
+	}
+	if !liandongAuthenticationConfigured(settingsSnapshot) {
+		return nil, errors.New("liandong authentication is not configured")
+	}
+	page, err := newLiandongClientWithSettings(settingsSnapshot).loadPaymentPage(
+		ctx,
+		*order.ProviderTradeNo,
+		settingsSnapshot,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	latestSettings, err := model.GetLiandongPaymentSettingsFromDB()
+	if err != nil {
+		return nil, err
+	}
+	if !latestSettings.Enabled {
+		return nil, errors.New("liandong payment gateway was disabled")
+	}
+	return page, nil
 }
 
 func liandongAuthenticationConfigured(settingsSnapshot setting.LiandongPaymentSettings) bool {
@@ -1723,7 +2289,7 @@ func createLiandongPayment(
 	}
 
 	providerTradeNo, createErr := client.createOrder(
-		ctx,
+		withLiandongMonitor(ctx, "user_order_create", order.LocalTradeNo),
 		order.GoodsKeySnapshot,
 		order.ContactSnapshot,
 		order.JUUIDSnapshot,
@@ -1919,6 +2485,7 @@ func RefreshLiandongPaymentForUser(
 	userID int,
 	localTradeNo string,
 ) (*LiandongPaymentView, error) {
+	ctx = withLiandongMonitor(ctx, "client_order_poll", localTradeNo)
 	order, err := model.GetLiandongOrderForUser(userID, localTradeNo)
 	if err != nil {
 		return nil, err
@@ -2039,6 +2606,7 @@ func CloseLiandongPaymentForUser(
 	userID int,
 	localTradeNo string,
 ) (*LiandongPaymentView, error) {
+	ctx = withLiandongMonitor(ctx, "user_order_close", localTradeNo)
 	leaseToken, err := acquireLiandongUserOperationLease(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -2078,6 +2646,7 @@ func CloseLiandongPaymentForRoot(
 	ctx context.Context,
 	localTradeNo string,
 ) (*LiandongPaymentView, error) {
+	ctx = withLiandongMonitor(ctx, "root_order_close", localTradeNo)
 	order, err := model.GetLiandongOrder(localTradeNo)
 	if err != nil {
 		return nil, err
@@ -2306,6 +2875,7 @@ func runLiandongPaymentProbeForCreatedOrder(
 	productName string,
 	providerTradeNo string,
 ) error {
+	ctx = withLiandongMonitor(ctx, "payment_probe", localTradeNo)
 	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
 	if err != nil {
 		return err
@@ -2383,7 +2953,10 @@ func runLiandongPaymentProbeForCreatedOrder(
 }
 
 func RunLiandongReconcileOnce(ctx context.Context) (map[string]int, error) {
-	return runLiandongReconcileOnce(ctx, newLiandongClient())
+	return runLiandongReconcileOnce(
+		withLiandongMonitor(ctx, "scheduled_reconcile", ""),
+		newLiandongClient(),
+	)
 }
 
 func runLiandongReconcileOnce(ctx context.Context, client *liandongClient) (map[string]int, error) {

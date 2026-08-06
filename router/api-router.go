@@ -196,6 +196,7 @@ func SetApiRouter(router *gin.Engine) {
 			liandongRoute.GET("/products", controller.ListLiandongProducts)
 			liandongRoute.POST("/orders", middleware.CriticalRateLimit(), controller.CreateLiandongOrder)
 			liandongRoute.GET("/orders/:local_trade_no", controller.GetLiandongOrder)
+			liandongRoute.GET("/orders/:local_trade_no/page", controller.GetLiandongPaymentPage)
 			liandongRoute.POST("/orders/:local_trade_no/close", middleware.CriticalRateLimit(), controller.CloseLiandongOrderForUser)
 		}
 		optionRoute := apiRouter.Group("/option")
@@ -224,6 +225,8 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.DELETE("/liandong/products/:id/thumbnail", controller.RootDeleteLiandongThumbnail)
 			optionRoute.GET("/liandong/provider-goods", controller.RootListLiandongProviderGoods)
 			optionRoute.GET("/liandong/orders", controller.RootListLiandongOrders)
+			optionRoute.GET("/liandong/monitor/tasks", controller.RootGetLiandongMonitorTasks)
+			optionRoute.GET("/liandong/monitor/calls", controller.RootListLiandongMonitorCalls)
 			optionRoute.POST("/liandong/orders/:local_trade_no/requeue", middleware.CriticalRateLimit(), controller.RootRequeueLiandongOrder)
 			optionRoute.POST("/liandong/orders/:local_trade_no/close", middleware.CriticalRateLimit(), controller.RootCloseLiandongOrder)
 			optionRoute.POST("/liandong/orders/:local_trade_no/manual-fulfill", middleware.CriticalRateLimit(), controller.RootManualFulfillLiandongOrder)

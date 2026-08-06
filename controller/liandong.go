@@ -117,6 +117,20 @@ type liandongRootOrderView struct {
 	UpdatedAt           int64   `json:"updated_at"`
 }
 
+type liandongMonitorTaskData struct {
+	GatewayEnabled      bool                       `json:"gateway_enabled"`
+	ReconcileEnabled    bool                       `json:"reconcile_enabled"`
+	FulfillEnabled      bool                       `json:"fulfill_enabled"`
+	SchedulerConfigured bool                       `json:"scheduler_configured"`
+	SchedulerActive     bool                       `json:"scheduler_active"`
+	HasWork             bool                       `json:"has_work"`
+	PollIntervalSeconds int                        `json:"poll_interval_seconds"`
+	Page                int                        `json:"page"`
+	PageSize            int                        `json:"page_size"`
+	Total               int64                      `json:"total"`
+	Items               []model.SystemTaskResponse `json:"items"`
+}
+
 func ListLiandongProducts(c *gin.Context) {
 	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
 	if err != nil {
@@ -220,6 +234,23 @@ func GetLiandongOrder(c *gin.Context) {
 	common.ApiSuccess(c, view)
 }
 
+func GetLiandongPaymentPage(c *gin.Context) {
+	page, err := service.LoadLiandongPaymentPageForUser(
+		c.Request.Context(),
+		c.GetInt("id"),
+		c.Param("local_trade_no"),
+	)
+	if err != nil {
+		if errors.Is(err, model.ErrLiandongOrderNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "Payment order not found"})
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, page)
+}
+
 func CloseLiandongOrderForUser(c *gin.Context) {
 	view, err := service.CloseLiandongPaymentForUser(
 		c.Request.Context(),
@@ -308,6 +339,8 @@ func GetLiandongSettings(c *gin.Context) {
 		"payment_probe_alert_email":    settingsSnapshot.PaymentProbeAlertEmail,
 		"juuid":                        settingsSnapshot.JUUID,
 		"auth_mode":                    settingsSnapshot.AuthMode,
+		"username":                     settingsSnapshot.Username,
+		"password":                     settingsSnapshot.Password,
 		"username_configured":          strings.TrimSpace(settingsSnapshot.Username) != "",
 		"password_configured":          settingsSnapshot.Password != "",
 		"merchant_token_configured":    strings.TrimSpace(settingsSnapshot.MerchantToken) != "",
@@ -969,7 +1002,29 @@ func RootListLiandongProviderGoods(c *gin.Context) {
 
 func RootListLiandongOrders(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
-	orders, total, err := model.ListLiandongOrders(pageInfo, c.Query("keyword"))
+	paymentStatus := strings.TrimSpace(c.Query("status"))
+	if paymentStatus == "" {
+		paymentStatus = model.LiandongPaymentStatusPaid
+	}
+	switch paymentStatus {
+	case "all",
+		model.LiandongPaymentStatusCreating,
+		model.LiandongPaymentStatusPending,
+		model.LiandongPaymentStatusPaid,
+		model.LiandongPaymentStatusCreateFailed,
+		model.LiandongPaymentStatusCreateUnknown,
+		model.LiandongPaymentStatusExpired,
+		model.LiandongPaymentStatusReviewRequired,
+		model.LiandongPaymentStatusClosed:
+	default:
+		common.ApiErrorMsg(c, "Invalid payment status filter")
+		return
+	}
+	orders, total, err := model.ListLiandongOrders(
+		pageInfo,
+		c.Query("keyword"),
+		paymentStatus,
+	)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -1011,6 +1066,92 @@ func RootListLiandongOrders(c *gin.Context) {
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(views)
 	common.ApiSuccess(c, pageInfo)
+}
+
+func RootGetLiandongMonitorTasks(c *gin.Context) {
+	status := strings.TrimSpace(c.Query("status"))
+	if status == "" {
+		status = string(model.SystemTaskStatusRunning)
+	}
+	switch status {
+	case "all",
+		string(model.SystemTaskStatusPending),
+		string(model.SystemTaskStatusRunning),
+		string(model.SystemTaskStatusSucceeded),
+		string(model.SystemTaskStatusFailed):
+	default:
+		common.ApiErrorMsg(c, "Invalid task status filter")
+		return
+	}
+	page, _ := strconv.Atoi(c.Query("p"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+	switch pageSize {
+	case 10, 20, 50, 100, 200, 500:
+	default:
+		pageSize = 10
+	}
+	tasks, total, err := model.ListSystemTasksByTypePage(
+		model.SystemTaskTypeLiandongPoll,
+		status,
+		page,
+		pageSize,
+	)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	hasWork := model.HasLiandongWork(
+		settingsSnapshot.ReconcileEnabled,
+		settingsSnapshot.FulfillEnabled,
+		settingsSnapshot.ReconcileEnabled,
+	)
+	items := make([]model.SystemTaskResponse, 0, len(tasks))
+	for _, task := range tasks {
+		items = append(items, task.ToResponse())
+	}
+	common.ApiSuccess(c, liandongMonitorTaskData{
+		GatewayEnabled:   settingsSnapshot.Enabled,
+		ReconcileEnabled: settingsSnapshot.ReconcileEnabled,
+		FulfillEnabled:   settingsSnapshot.FulfillEnabled,
+		SchedulerConfigured: settingsSnapshot.Enabled &&
+			(settingsSnapshot.ReconcileEnabled || settingsSnapshot.FulfillEnabled),
+		SchedulerActive:     settingsSnapshot.Enabled && hasWork,
+		HasWork:             hasWork,
+		PollIntervalSeconds: settingsSnapshot.PollIntervalSeconds,
+		Page:                page,
+		PageSize:            pageSize,
+		Total:               total,
+		Items:               items,
+	})
+}
+
+func RootListLiandongMonitorCalls(c *gin.Context) {
+	resultFilter := strings.TrimSpace(c.Query("result"))
+	if resultFilter == "" {
+		resultFilter = "success"
+	}
+	switch resultFilter {
+	case "all", "success", "failed":
+	default:
+		common.ApiErrorMsg(c, "Invalid upstream result filter")
+		return
+	}
+	page, _ := strconv.Atoi(c.Query("p"))
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+	records, err := model.ListLiandongUpstreamCalls(page, pageSize, resultFilter)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, records)
 }
 
 func RootRequeueLiandongOrder(c *gin.Context) {

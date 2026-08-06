@@ -1,3 +1,4 @@
+import type { SystemTask } from '@/features/system-settings/types'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -43,6 +44,8 @@ export type LiandongSettings = {
   payment_probe_alert_email: string
   juuid: string
   auth_mode: LiandongAuthMode
+  username: string
+  password: string
   username_configured: boolean
   password_configured: boolean
   merchant_token_configured: boolean
@@ -51,6 +54,8 @@ export type LiandongSettings = {
 export type LiandongSettingsUpdate = Partial<
   Omit<
     LiandongSettings,
+    | 'username'
+    | 'password'
     | 'username_configured'
     | 'password_configured'
     | 'merchant_token_configured'
@@ -147,6 +152,43 @@ export type LiandongOrderPage = {
   page_size: number
   total: number
   items: LiandongRootOrder[]
+}
+
+export type LiandongMonitorTasks = {
+  gateway_enabled: boolean
+  reconcile_enabled: boolean
+  fulfill_enabled: boolean
+  scheduler_configured: boolean
+  scheduler_active: boolean
+  has_work: boolean
+  poll_interval_seconds: number
+  page: number
+  page_size: number
+  total: number
+  items: SystemTask[]
+}
+
+export type LiandongUpstreamCall = {
+  request_id: string
+  source: string
+  reference?: string
+  operation: string
+  method: string
+  path: string
+  status_code: number
+  success: boolean
+  duration_ms: number
+  request_body?: string
+  response_body?: string
+  error?: string
+  created_at: number
+}
+
+export type LiandongUpstreamCallPage = {
+  page: number
+  page_size: number
+  total: number
+  items: LiandongUpstreamCall[]
 }
 
 export type LiandongApiResponse<T = unknown> = {

@@ -19,8 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   Boxes,
   Check,
-  ChevronLeft,
-  ChevronRight,
   CircleX,
   ImageIcon,
   KeyRound,
@@ -42,6 +40,7 @@ import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { Dialog } from '@/components/dialog'
+import { PasswordInput } from '@/components/password-input'
 import { StatusBadge, type StatusVariant } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -103,6 +102,8 @@ import {
   updateLiandongSettings,
   uploadLiandongThumbnail,
 } from './liandong-api'
+import { LiandongMonitor } from './liandong-monitor'
+import { LiandongTablePagination } from './liandong-table-pagination'
 import { LiandongThumbnailEditor } from './liandong-thumbnail-editor'
 import type {
   LiandongProductPayload,
@@ -112,7 +113,18 @@ import type {
   LiandongSettings,
 } from './liandong-types'
 
-const PAGE_SIZE = 10
+const DEFAULT_PAGE_SIZE = 10
+const ORDER_PAYMENT_STATUSES = [
+  'all',
+  'creating',
+  'pending',
+  'paid',
+  'create_failed',
+  'create_unknown',
+  'expired',
+  'review_required',
+  'closed',
+]
 
 const defaultSettings: LiandongSettings = {
   enabled: false,
@@ -132,6 +144,8 @@ const defaultSettings: LiandongSettings = {
   payment_probe_alert_email: '',
   juuid: '',
   auth_mode: 'manual_token',
+  username: '',
+  password: '',
   username_configured: false,
   password_configured: false,
   merchant_token_configured: false,
@@ -216,6 +230,8 @@ export function LiandongPaymentSection() {
   const [orders, setOrders] = useState<LiandongRootOrder[]>([])
   const [orderTotal, setOrderTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const [orderPageSize, setOrderPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const [orderStatus, setOrderStatus] = useState('paid')
   const [keyword, setKeyword] = useState('')
   const [searchKeyword, setSearchKeyword] = useState('')
   const [username, setUsername] = useState('')
@@ -250,12 +266,17 @@ export function LiandongPaymentSection() {
     useState<LiandongRootProduct | null>(null)
 
   const loadOrders = useCallback(async () => {
-    const response = await listLiandongOrders(page, PAGE_SIZE, searchKeyword)
+    const response = await listLiandongOrders(
+      page,
+      orderPageSize,
+      searchKeyword,
+      orderStatus
+    )
     if (response.success && response.data) {
       setOrders(response.data.items || [])
       setOrderTotal(response.data.total || 0)
     }
-  }, [page, searchKeyword])
+  }, [orderPageSize, orderStatus, page, searchKeyword])
 
   const loadProducts = useCallback(async () => {
     const response = await listLiandongProducts()
@@ -289,7 +310,11 @@ export function LiandongPaymentSection() {
 
   const loadSettings = useCallback(async () => {
     const response = await getLiandongSettings()
-    if (response.success && response.data) setSettings(response.data)
+    if (response.success && response.data) {
+      setSettings(response.data)
+      setUsername(response.data.username)
+      setPassword(response.data.password)
+    }
   }, [])
 
   useEffect(() => {
@@ -305,12 +330,14 @@ export function LiandongPaymentSection() {
         ] = await Promise.all([
           getLiandongSettings(),
           listLiandongProducts(),
-          listLiandongOrders(1, PAGE_SIZE, ''),
+          listLiandongOrders(1, DEFAULT_PAGE_SIZE, '', 'paid'),
           getAdminPlans(),
         ])
         if (cancelled) return
         if (settingsResponse.success && settingsResponse.data) {
           setSettings(settingsResponse.data)
+          setUsername(settingsResponse.data.username)
+          setPassword(settingsResponse.data.password)
         }
         if (productsResponse.success) {
           setProducts(productsResponse.data || [])
@@ -337,7 +364,6 @@ export function LiandongPaymentSection() {
     void loadOrders()
   }, [loadOrders, loading])
 
-  const totalPages = Math.max(1, Math.ceil(orderTotal / PAGE_SIZE))
   const planOptions = useMemo(
     () =>
       plans
@@ -354,6 +380,9 @@ export function LiandongPaymentSection() {
   const saveSettings = async () => {
     setSavingSettings(true)
     try {
+      const trimmedUsername = username.trim()
+      const usernameChanged = trimmedUsername !== settings.username
+      const passwordChanged = password !== settings.password
       const response = await updateLiandongSettings({
         enabled: settings.enabled,
         create_enabled: settings.create_enabled,
@@ -373,11 +402,11 @@ export function LiandongPaymentSection() {
         juuid: settings.juuid,
         auth_mode: settings.auth_mode,
         username:
-          settings.auth_mode === 'credentials'
-            ? username.trim() || undefined
+          settings.auth_mode === 'credentials' && usernameChanged
+            ? trimmedUsername || undefined
             : undefined,
         password:
-          settings.auth_mode === 'credentials'
+          settings.auth_mode === 'credentials' && passwordChanged
             ? password || undefined
             : undefined,
         merchant_token:
@@ -901,7 +930,7 @@ export function LiandongPaymentSection() {
             }
             label={t('Enable dedicated card marketplace proxy')}
             description={t(
-              'Routes only card marketplace backend API requests through the configured HTTP, HTTPS, or SOCKS5 proxy. User payment pages remain direct browser requests.'
+              'Routes card marketplace API requests and the initial user payment page request through the configured HTTP, HTTPS, or SOCKS5 proxy. Other application traffic is unaffected.'
             )}
           />
         </SettingsFormGrid>
@@ -1090,11 +1119,7 @@ export function LiandongPaymentSection() {
                   value={username}
                   maxLength={128}
                   disabled={clearUsername}
-                  placeholder={
-                    settings.username_configured
-                      ? t('Configured; enter a new value to replace it')
-                      : t('Not configured')
-                  }
+                  placeholder={t('Not configured')}
                   onChange={(event) => setUsername(event.target.value)}
                   autoComplete='off'
                 />
@@ -1115,17 +1140,12 @@ export function LiandongPaymentSection() {
                 <Label htmlFor='liandong-password'>
                   {t('Liandong password')}
                 </Label>
-                <Input
+                <PasswordInput
                   id='liandong-password'
-                  type='password'
                   value={password}
                   maxLength={256}
                   disabled={clearPassword}
-                  placeholder={
-                    settings.password_configured
-                      ? t('Configured; enter a new value to replace it')
-                      : t('Not configured')
-                  }
+                  placeholder={t('Not configured')}
                   onChange={(event) => setPassword(event.target.value)}
                   autoComplete='new-password'
                 />
@@ -1144,7 +1164,7 @@ export function LiandongPaymentSection() {
               </div>
               <p className='text-muted-foreground text-xs sm:col-span-2'>
                 {t(
-                  'Account and password are write-only. A refreshed merchant token is cached only by the backend.'
+                  'The account is shown directly. The stored password is masked by default and can be revealed with the visibility button. Refreshed merchant tokens remain backend-only.'
                 )}
               </p>
             </>
@@ -1449,14 +1469,44 @@ export function LiandongPaymentSection() {
         </div>
 
         <form
-          className='flex gap-2'
+          className='flex flex-wrap gap-2'
           onSubmit={(event) => {
             event.preventDefault()
             setPage(1)
             setSearchKeyword(keyword.trim())
           }}
         >
-          <div className='relative min-w-0 flex-1'>
+          <Select
+            items={ORDER_PAYMENT_STATUSES.map((status) => ({
+              value: status,
+              label:
+                status === 'all'
+                  ? t('All')
+                  : liandongPaymentStatusLabel(t, status),
+            }))}
+            value={orderStatus}
+            onValueChange={(status) => {
+              if (!status) return
+              setOrderStatus(status)
+              setPage(1)
+            }}
+          >
+            <SelectTrigger className='w-full sm:w-56' aria-label={t('Status')}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              <SelectGroup>
+                {ORDER_PAYMENT_STATUSES.map((status) => (
+                  <SelectItem key={status} value={status}>
+                    {status === 'all'
+                      ? t('All')
+                      : liandongPaymentStatusLabel(t, status)}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          <div className='relative min-w-0 flex-1 basis-64'>
             <Search className='text-muted-foreground absolute top-2.5 left-3 h-4 w-4' />
             <Input
               value={keyword}
@@ -1684,37 +1734,20 @@ export function LiandongPaymentSection() {
           ]}
         />
 
-        <div className='flex items-center justify-between gap-3'>
-          <p className='text-muted-foreground text-xs'>
-            {t('{{count}} orders', { count: orderTotal })}
-          </p>
-          <div className='flex items-center gap-2'>
-            <Button
-              variant='outline'
-              size='icon-sm'
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
-              disabled={page <= 1}
-              aria-label={t('Previous page')}
-            >
-              <ChevronLeft className='h-4 w-4' />
-            </Button>
-            <span className='text-sm'>
-              {page} / {totalPages}
-            </span>
-            <Button
-              variant='outline'
-              size='icon-sm'
-              onClick={() =>
-                setPage((current) => Math.min(totalPages, current + 1))
-              }
-              disabled={page >= totalPages}
-              aria-label={t('Next page')}
-            >
-              <ChevronRight className='h-4 w-4' />
-            </Button>
-          </div>
-        </div>
+        <LiandongTablePagination
+          countLabel={t('{{count}} orders', { count: orderTotal })}
+          page={page}
+          pageSize={orderPageSize}
+          total={orderTotal}
+          onPageChange={setPage}
+          onPageSizeChange={(nextPageSize) => {
+            setOrderPageSize(nextPageSize)
+            setPage(1)
+          }}
+        />
       </div>
+
+      <LiandongMonitor />
 
       <Dialog
         open={productDialogOpen}

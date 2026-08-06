@@ -111,8 +111,14 @@ export interface LiandongPaymentView {
   late_payment?: boolean
 }
 
+export interface LiandongPaymentPage {
+  html?: string
+  redirect_url?: string
+}
+
 export type LiandongProductsResponse = ApiResponse<LiandongProduct[]>
 export type LiandongPaymentResponse = ApiResponse<LiandongPaymentView>
+export type LiandongPaymentPageResponse = ApiResponse<LiandongPaymentPage>
 
 /**
  * Creem product configuration

@@ -40,8 +40,11 @@ func TestLiandongUserRoutesRequireAuthenticationAndManagementRequiresRoot(t *tes
 	require.NoError(t, db.AutoMigrate(
 		&model.Option{},
 		&model.User{},
+		&model.Log{},
+		&model.SystemTask{},
 		&model.LiandongProduct{},
 		&model.LiandongProductThumbnail{},
+		&model.LiandongOrder{},
 	))
 	t.Cleanup(func() {
 		sqlDB, dbErr := db.DB()
@@ -124,6 +127,8 @@ func TestLiandongUserRoutesRequireAuthenticationAndManagementRequiresRoot(t *tes
 		{method: http.MethodDelete, path: "/api/option/liandong/products/1/thumbnail"},
 		{method: http.MethodGet, path: "/api/option/liandong/provider-goods"},
 		{method: http.MethodGet, path: "/api/option/liandong/orders"},
+		{method: http.MethodGet, path: "/api/option/liandong/monitor/tasks"},
+		{method: http.MethodGet, path: "/api/option/liandong/monitor/calls"},
 		{method: http.MethodPost, path: "/api/option/liandong/orders/LDTEST/requeue"},
 		{method: http.MethodPost, path: "/api/option/liandong/orders/LDTEST/close"},
 		{method: http.MethodPost, path: "/api/option/liandong/orders/LDTEST/manual-fulfill"},
@@ -142,7 +147,12 @@ func TestLiandongUserRoutesRequireAuthenticationAndManagementRequiresRoot(t *tes
 		assert.Contains(t, recorder.Body.String(), `"code":"AUTH_INSUFFICIENT_PRIVILEGE"`, "%s %s", route.method, route.path)
 	}
 
-	for _, path := range []string{"/api/option/liandong", "/api/option/liandong/products"} {
+	for _, path := range []string{
+		"/api/option/liandong",
+		"/api/option/liandong/products",
+		"/api/option/liandong/monitor/tasks",
+		"/api/option/liandong/monitor/calls",
+	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("Authorization", "Bearer "+rootToken)
 		recorder := httptest.NewRecorder()

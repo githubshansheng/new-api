@@ -35,6 +35,11 @@ import { StatusBadge, type StatusVariant } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
+  formatDuration,
+  formatResetPeriod,
+} from '@/features/subscriptions/lib/format'
+import type { SubscriptionPlan } from '@/features/subscriptions/types'
+import {
   formatLiandongAmount,
   formatLiandongQuota,
   localizeLiandongMessage,
@@ -43,18 +48,18 @@ import {
   liandongFulfillmentStatusLabel,
   liandongPaymentStatusLabel,
 } from '@/lib/liandong-status'
-import {
-  formatDuration,
-  formatResetPeriod,
-} from '@/features/subscriptions/lib/format'
-import type { SubscriptionPlan } from '@/features/subscriptions/types'
 
 import {
   closeLiandongOrderForUser,
   createLiandongOrder,
   getLiandongOrder,
+  getLiandongPaymentPage,
 } from '../../api'
-import type { LiandongPaymentView, LiandongProduct } from '../../types'
+import type {
+  LiandongPaymentPage,
+  LiandongPaymentView,
+  LiandongProduct,
+} from '../../types'
 
 const terminalPaymentStatuses = new Set([
   'create_failed',
@@ -67,6 +72,8 @@ const terminalFulfillmentStatuses = new Set(['fulfilled', 'review_required'])
 
 const liandongIframeSandboxPermissions =
   'allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts'
+const liandongInlineSandboxPermissions =
+  'allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-scripts'
 
 function clientPollIntervalMs(order: LiandongPaymentView): number {
   const seconds = Math.min(
@@ -134,27 +141,32 @@ export function LiandongPaymentDialog({
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null)
   const [thumbnailFailed, setThumbnailFailed] = useState(false)
   const [error, setError] = useState('')
+  const [paymentPage, setPaymentPage] = useState<LiandongPaymentPage | null>(
+    null
+  )
+  const [paymentPageLoading, setPaymentPageLoading] = useState(false)
+  const [paymentPageError, setPaymentPageError] = useState('')
+  const [paymentPageAttempt, setPaymentPageAttempt] = useState(0)
   const successHandledRef = useRef(false)
   const closeRequestedRef = useRef(false)
   const closingRef = useRef(false)
   const orderRef = useRef<LiandongPaymentView | null>(null)
   const createAttemptRef = useRef<number | null>(null)
   const createSessionRef = useRef(0)
+  const paymentPageSessionRef = useRef(0)
   const productId = product?.id
   const subscriptionPlan: Partial<SubscriptionPlan> | null =
     product?.subscription
       ? {
           title: product.subscription.title,
           subtitle: product.subscription.subtitle,
-          duration_unit:
-            product.subscription
-              .duration_unit as SubscriptionPlan['duration_unit'],
+          duration_unit: product.subscription
+            .duration_unit as SubscriptionPlan['duration_unit'],
           duration_value: product.subscription.duration_value,
           custom_seconds: product.subscription.custom_seconds,
           total_amount: product.subscription.total_amount,
-          quota_reset_period:
-            product.subscription
-              .quota_reset_period as SubscriptionPlan['quota_reset_period'],
+          quota_reset_period: product.subscription
+            .quota_reset_period as SubscriptionPlan['quota_reset_period'],
           quota_reset_custom_seconds:
             product.subscription.quota_reset_custom_seconds,
           upgrade_group: product.subscription.upgrade_group,
@@ -186,7 +198,10 @@ export function LiandongPaymentDialog({
 
   const refreshOrder = useCallback(
     async (localTradeNo: string, manual = false) => {
-      if (manual) setRefreshing(true)
+      if (manual) {
+        setRefreshing(true)
+        setPaymentPageAttempt((current) => current + 1)
+      }
       try {
         const response = await getLiandongOrder(localTradeNo)
         if (!response.success || !response.data) {
@@ -295,6 +310,8 @@ export function LiandongPaymentDialog({
     successHandledRef.current = false
     setOrder(null)
     setError('')
+    setPaymentPage(null)
+    setPaymentPageError('')
     setCreating(true)
 
     const create = async () => {
@@ -397,9 +414,99 @@ export function LiandongPaymentDialog({
     }
   }, [open, order, refreshOrder])
 
-  const openPaymentPage = () => {
+  const loadPaymentPage = useCallback(
+    async (paymentURL: string): Promise<LiandongPaymentPage | null> => {
+      const requestID = paymentPageSessionRef.current + 1
+      paymentPageSessionRef.current = requestID
+      setPaymentPageLoading(true)
+      try {
+        const response = await getLiandongPaymentPage(paymentURL)
+        if (paymentPageSessionRef.current !== requestID) return null
+        if (!response.success || !response.data) {
+          setPaymentPageError(
+            localizeLiandongMessage(
+              t,
+              response.message,
+              'Failed to open payment page'
+            )
+          )
+          return null
+        }
+        if (!response.data.html && !response.data.redirect_url) {
+          setPaymentPageError(t('Failed to open payment page'))
+          return null
+        }
+        setPaymentPageError('')
+        setPaymentPage(response.data)
+        return response.data
+      } catch (requestError: unknown) {
+        if (paymentPageSessionRef.current !== requestID) return null
+        setPaymentPageError(
+          paymentRequestErrorMessage(
+            t,
+            requestError,
+            'Failed to open payment page'
+          )
+        )
+        return null
+      } finally {
+        if (paymentPageSessionRef.current === requestID) {
+          setPaymentPageLoading(false)
+        }
+      }
+    },
+    [t]
+  )
+
+  useEffect(() => {
+    const paymentURL = order?.payment_url
+    if (!open || !paymentURL || order.payment_status !== 'pending') {
+      setPaymentPage(null)
+      setPaymentPageError('')
+      setPaymentPageLoading(false)
+      return
+    }
+
+    void loadPaymentPage(paymentURL)
+    return () => {
+      paymentPageSessionRef.current += 1
+    }
+  }, [
+    loadPaymentPage,
+    open,
+    order?.local_trade_no,
+    order?.payment_status,
+    order?.payment_url,
+    paymentPageAttempt,
+  ])
+
+  const openPaymentPage = async () => {
     if (!order?.payment_url) return
-    window.open(order.payment_url, '_blank', 'noopener,noreferrer')
+    const popup = window.open('', '_blank')
+    if (!popup) {
+      toast.error(t('Operation failed'))
+      return
+    }
+    popup.opener = null
+
+    const page = paymentPage || (await loadPaymentPage(order.payment_url))
+    if (!page) {
+      popup.close()
+      return
+    }
+    if (page.redirect_url) {
+      popup.location.replace(page.redirect_url)
+      return
+    }
+    if (page.html) {
+      popup.document.open()
+      popup.document.write(
+        '<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><style>html,body,iframe{width:100%;height:100%;margin:0;border:0}</style></head><body><iframe title="Payment" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-scripts" referrerpolicy="no-referrer"></iframe></body></html>'
+      )
+      popup.document.close()
+      const paymentFrame = popup.document.querySelector('iframe')
+      if (paymentFrame) paymentFrame.srcdoc = page.html
+    }
   }
 
   const showIframe =
@@ -450,7 +557,7 @@ export function LiandongPaymentDialog({
             </Button>
           )}
           {order?.payment_url && (
-            <Button variant='outline' onClick={openPaymentPage}>
+            <Button variant='outline' onClick={() => void openPaymentPage()}>
               <ExternalLink className='h-4 w-4' />
               {t('Open payment page')}
             </Button>
@@ -627,13 +734,32 @@ export function LiandongPaymentDialog({
             </Alert>
           )}
 
-          {showIframe && (
+          {showIframe && paymentPageLoading && (
+            <div className='text-muted-foreground flex min-h-[420px] items-center justify-center gap-2 rounded-md border text-sm'>
+              <Loader2 className='h-5 w-5 animate-spin' />
+              {t('Loading...')}
+            </div>
+          )}
+
+          {showIframe && !paymentPageLoading && paymentPageError && (
+            <Alert variant='destructive'>
+              <TriangleAlert className='h-4 w-4' />
+              <AlertDescription>{paymentPageError}</AlertDescription>
+            </Alert>
+          )}
+
+          {showIframe && !paymentPageLoading && paymentPage && (
             <iframe
-              src={order.payment_url}
+              src={paymentPage.redirect_url}
+              srcDoc={paymentPage.html}
               title={t('Liandong payment page')}
               className='h-full min-h-[420px] w-full rounded-md border bg-white'
               referrerPolicy='no-referrer'
-              sandbox={liandongIframeSandboxPermissions}
+              sandbox={
+                paymentPage.html
+                  ? liandongInlineSandboxPermissions
+                  : liandongIframeSandboxPermissions
+              }
             />
           )}
 
@@ -643,7 +769,7 @@ export function LiandongPaymentDialog({
               <p className='text-muted-foreground text-sm'>
                 {t('Open the payment page to scan the QR code')}
               </p>
-              <Button onClick={openPaymentPage}>
+              <Button onClick={() => void openPaymentPage()}>
                 <ExternalLink className='h-4 w-4' />
                 {t('Open payment page')}
               </Button>

@@ -653,8 +653,12 @@ func GetLiandongOrder(localTradeNo string) (*LiandongOrder, error) {
 	return &order, nil
 }
 
-func ListLiandongOrders(pageInfo *common.PageInfo, keyword string) ([]LiandongOrder, int64, error) {
+func ListLiandongOrders(pageInfo *common.PageInfo, keyword string, paymentStatus string) ([]LiandongOrder, int64, error) {
 	query := DB.Model(&LiandongOrder{})
+	paymentStatus = strings.TrimSpace(paymentStatus)
+	if paymentStatus != "" && paymentStatus != "all" {
+		query = query.Where("payment_status = ?", paymentStatus)
+	}
 	keyword = strings.TrimSpace(keyword)
 	if keyword != "" {
 		pattern, err := sanitizeLikePattern(keyword)

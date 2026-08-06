@@ -26,7 +26,7 @@ import {
   RefreshCw,
   TriangleAlert,
 } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -72,8 +72,10 @@ const terminalFulfillmentStatuses = new Set(['fulfilled', 'review_required'])
 
 const liandongIframeSandboxPermissions =
   'allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts'
-const liandongInlineSandboxPermissions =
-  'allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-scripts'
+
+function liandongPaymentDocumentURL(html: string): string {
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+}
 
 function clientPollIntervalMs(order: LiandongPaymentView): number {
   const seconds = Math.min(
@@ -172,6 +174,11 @@ export function LiandongPaymentDialog({
           upgrade_group: product.subscription.upgrade_group,
         }
       : null
+  const paymentFrameURL = useMemo(() => {
+    if (paymentPage?.redirect_url) return paymentPage.redirect_url
+    if (paymentPage?.html) return liandongPaymentDocumentURL(paymentPage.html)
+    return undefined
+  }, [paymentPage?.html, paymentPage?.redirect_url])
 
   useEffect(() => {
     orderRef.current = order
@@ -501,11 +508,11 @@ export function LiandongPaymentDialog({
     if (page.html) {
       popup.document.open()
       popup.document.write(
-        '<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><style>html,body,iframe{width:100%;height:100%;margin:0;border:0}</style></head><body><iframe title="Payment" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-scripts" referrerpolicy="no-referrer"></iframe></body></html>'
+        '<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><style>html,body,iframe{width:100%;height:100%;margin:0;border:0}</style></head><body><iframe title="Payment" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts" referrerpolicy="no-referrer"></iframe></body></html>'
       )
       popup.document.close()
       const paymentFrame = popup.document.querySelector('iframe')
-      if (paymentFrame) paymentFrame.srcdoc = page.html
+      if (paymentFrame) paymentFrame.src = liandongPaymentDocumentURL(page.html)
     }
   }
 
@@ -750,16 +757,11 @@ export function LiandongPaymentDialog({
 
           {showIframe && !paymentPageLoading && paymentPage && (
             <iframe
-              src={paymentPage.redirect_url}
-              srcDoc={paymentPage.html}
+              src={paymentFrameURL}
               title={t('Liandong payment page')}
               className='h-full min-h-[420px] w-full rounded-md border bg-white'
               referrerPolicy='no-referrer'
-              sandbox={
-                paymentPage.html
-                  ? liandongInlineSandboxPermissions
-                  : liandongIframeSandboxPermissions
-              }
+              sandbox={liandongIframeSandboxPermissions}
             />
           )}
 

@@ -41,6 +41,7 @@ import type {
   WaffoPancakePaymentResponse,
   LiandongProductsResponse,
   LiandongPaymentResponse,
+  LiandongPaymentPageResponse,
 } from './types'
 
 // ============================================================================
@@ -210,6 +211,17 @@ export async function getLiandongOrder(
       skipErrorHandler: true,
     }
   )
+  return res.data
+}
+
+export async function getLiandongPaymentPage(
+  paymentPageUrl: string
+): Promise<LiandongPaymentPageResponse> {
+  const res = await api.get(paymentPageUrl, {
+    disableDuplicate: true,
+    skipBusinessError: true,
+    skipErrorHandler: true,
+  })
   return res.data
 }
 

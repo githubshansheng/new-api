@@ -148,7 +148,7 @@ chmod +x new-api.sh
 | `start` | 启动服务；可执行文件不存在时会先自动构建 |
 | `stop` | 停止脚本管理的后台服务 |
 | `restart` | 不重新构建，直接重启服务 |
-| `rebuild` | 停止服务，重新构建全部源码并启动 |
+| `rebuild` | 保持当前服务运行并构建候选版本，完成后停止服务、替换二进制并重新启动 |
 | `status` | 查看进程状态和 HTTP 健康检查结果 |
 | `logs` | 持续查看脚本管理进程的标准输出和错误日志 |
 
@@ -162,6 +162,9 @@ Windows 可通过 `.\new-api.cmd start --port 8080`、Linux 可通过
 
 Windows 构建产物为 `build/new-api.exe`，Linux 构建产物为 `build/new-api`。
 进程信息及标准输出/错误日志保存在 `.run/`，应用日志保存在 `logs/`。
+
+执行 `rebuild` 时，会先完成前后端编译，再停止当前服务。编译失败不会停止
+当前服务；停机时间仅包含替换已完成的二进制文件和重新启动的时间。
 
 ### 使用 Docker Compose（推荐）
 

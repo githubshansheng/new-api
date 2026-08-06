@@ -20,12 +20,14 @@ import { api } from '@/lib/api'
 
 import type {
   LiandongApiResponse,
+  LiandongMonitorTasks,
   LiandongOrderPage,
   LiandongProductPayload,
   LiandongProviderGoods,
   LiandongRootProduct,
   LiandongSettings,
   LiandongSettingsUpdate,
+  LiandongUpstreamCallPage,
 } from './liandong-types'
 
 export async function getLiandongSettings(): Promise<
@@ -85,14 +87,40 @@ export async function deleteLiandongProduct(
 export async function listLiandongOrders(
   page: number,
   pageSize: number,
-  keyword: string
+  keyword: string,
+  status: string
 ): Promise<LiandongApiResponse<LiandongOrderPage>> {
   const response = await api.get('/api/option/liandong/orders', {
     params: {
       p: page,
       page_size: pageSize,
       keyword: keyword || undefined,
+      status,
     },
+    disableDuplicate: true,
+  })
+  return response.data
+}
+
+export async function getLiandongMonitorTasks(
+  page: number,
+  pageSize: number,
+  status: string
+): Promise<LiandongApiResponse<LiandongMonitorTasks>> {
+  const response = await api.get('/api/option/liandong/monitor/tasks', {
+    params: { p: page, page_size: pageSize, status },
+    disableDuplicate: true,
+  })
+  return response.data
+}
+
+export async function listLiandongMonitorCalls(
+  page: number,
+  pageSize: number,
+  result: string
+): Promise<LiandongApiResponse<LiandongUpstreamCallPage>> {
+  const response = await api.get('/api/option/liandong/monitor/calls', {
+    params: { p: page, page_size: pageSize, result },
     disableDuplicate: true,
   })
   return response.data

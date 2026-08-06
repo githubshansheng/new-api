@@ -426,6 +426,7 @@ func TestListLiandongOrdersSearchesExactUserID(t *testing.T) {
 	orders, total, err := ListLiandongOrders(
 		&common.PageInfo{Page: 1, PageSize: 10},
 		strconv.Itoa(user.Id),
+		"all",
 	)
 
 	require.NoError(t, err)

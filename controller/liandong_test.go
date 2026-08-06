@@ -30,7 +30,84 @@ func setupLiandongControllerTestDB(t *testing.T) {
 		&model.LiandongProductInventoryCode{},
 		&model.LiandongProductThumbnail{},
 		&model.LiandongUserOperationLease{},
+		&model.SystemTask{},
 	))
+}
+
+func TestRootGetLiandongMonitorTasksPaginatesHistory(t *testing.T) {
+	setupLiandongControllerTestDB(t)
+	for index := 0; index < 12; index++ {
+		require.NoError(t, model.DB.Create(&model.SystemTask{
+			TaskID: "systask_" + common.GetRandomString(32),
+			Type:   model.SystemTaskTypeLiandongPoll,
+			Status: model.SystemTaskStatusSucceeded,
+		}).Error)
+	}
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(
+		http.MethodGet,
+		"/api/option/liandong/monitor/tasks?p=2&page_size=10&status=succeeded",
+		nil,
+	)
+
+	RootGetLiandongMonitorTasks(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Page     int                        `json:"page"`
+			PageSize int                        `json:"page_size"`
+			Total    int64                      `json:"total"`
+			Items    []model.SystemTaskResponse `json:"items"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Success)
+	assert.Equal(t, 2, response.Data.Page)
+	assert.Equal(t, 10, response.Data.PageSize)
+	assert.EqualValues(t, 12, response.Data.Total)
+	assert.Len(t, response.Data.Items, 2)
+}
+
+func TestRootGetLiandongMonitorTasksDefaultsToRunning(t *testing.T) {
+	setupLiandongControllerTestDB(t)
+	for _, status := range []model.SystemTaskStatus{
+		model.SystemTaskStatusRunning,
+		model.SystemTaskStatusSucceeded,
+	} {
+		require.NoError(t, model.DB.Create(&model.SystemTask{
+			TaskID: "systask_" + common.GetRandomString(32),
+			Type:   model.SystemTaskTypeLiandongPoll,
+			Status: status,
+		}).Error)
+	}
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(
+		http.MethodGet,
+		"/api/option/liandong/monitor/tasks?p=1&page_size=10",
+		nil,
+	)
+
+	RootGetLiandongMonitorTasks(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Total int64                      `json:"total"`
+			Items []model.SystemTaskResponse `json:"items"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Success)
+	assert.EqualValues(t, 1, response.Data.Total)
+	require.Len(t, response.Data.Items, 1)
+	assert.Equal(t, model.SystemTaskStatusRunning, response.Data.Items[0].Status)
 }
 
 func TestGetLiandongOrderScopesByAuthenticatedUser(t *testing.T) {
@@ -153,6 +230,8 @@ func TestGetLiandongSettingsNeverReturnsMerchantToken(t *testing.T) {
 	setupLiandongControllerTestDB(t)
 	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
 		"LiandongMerchantToken":       "super-secret-token",
+		"LiandongUsername":            "visible-root-account",
+		"LiandongPassword":            "visible-root-password",
 		"LiandongJUUID":               "merchant-id",
 		"LiandongBaseURL":             "https://gateway.example.com/card",
 		"LiandongProxyEnabled":        "true",
@@ -170,6 +249,8 @@ func TestGetLiandongSettingsNeverReturnsMerchantToken(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.NotContains(t, recorder.Body.String(), "super-secret-token")
+	assert.Contains(t, recorder.Body.String(), `"username":"visible-root-account"`)
+	assert.Contains(t, recorder.Body.String(), `"password":"visible-root-password"`)
 	assert.Contains(t, recorder.Body.String(), `"merchant_token_configured":true`)
 	assert.Contains(t, recorder.Body.String(), `"base_url":"https://gateway.example.com/card"`)
 	assert.Contains(t, recorder.Body.String(), `"proxy_enabled":true`)
@@ -271,7 +352,7 @@ func TestRootListLiandongOrdersSanitizesHistoricalDiagnostics(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
-	context.Request = httptest.NewRequest(http.MethodGet, "/?page=1&page_size=10", nil)
+	context.Request = httptest.NewRequest(http.MethodGet, "/?page=1&page_size=10&status=all", nil)
 
 	RootListLiandongOrders(context)
 
@@ -292,6 +373,50 @@ func TestRootListLiandongOrdersSanitizesHistoricalDiagnostics(t *testing.T) {
 	} {
 		assert.NotContains(t, body, secret)
 	}
+}
+
+func TestRootListLiandongOrdersDefaultsToPaid(t *testing.T) {
+	setupLiandongControllerTestDB(t)
+	for index, status := range []string{
+		model.LiandongPaymentStatusPaid,
+		model.LiandongPaymentStatusPending,
+	} {
+		require.NoError(t, model.DB.Create(&model.LiandongOrder{
+			LocalTradeNo:        "LD-FILTER-" + common.GetRandomString(16),
+			UserID:              index + 1,
+			ProductID:           1,
+			ProductNameSnapshot: "Filter product",
+			BusinessType:        model.LiandongBusinessTypeQuota,
+			GoodsKeySnapshot:    "filter-goods",
+			ContactSnapshot:     "10000000000" + string(rune('0'+index)),
+			JUUIDSnapshot:       "filter-merchant",
+			ExpectedAmountMinor: 100,
+			CurrencySnapshot:    "CNY",
+			FulfillmentSnapshot: "{}",
+			PaymentStatus:       status,
+			FulfillmentStatus:   model.LiandongFulfillmentStatusWaiting,
+		}).Error)
+	}
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/?p=1&page_size=10", nil)
+
+	RootListLiandongOrders(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Total int64                   `json:"total"`
+			Items []liandongRootOrderView `json:"items"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Success)
+	assert.EqualValues(t, 1, response.Data.Total)
+	require.Len(t, response.Data.Items, 1)
+	assert.Equal(t, model.LiandongPaymentStatusPaid, response.Data.Items[0].PaymentStatus)
 }
 
 func TestUpdateLiandongSettingsAllowsEmergencyDisableWithIncompleteCredentials(t *testing.T) {

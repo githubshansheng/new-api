@@ -102,6 +102,8 @@ export interface LiandongPaymentView {
   payment_status: string
   fulfillment_status: string
   payment_url?: string
+  fallback_url?: string
+  fallback_contact?: string
   iframe_allowed: boolean
   client_poll_interval_seconds: number
   created_at: number

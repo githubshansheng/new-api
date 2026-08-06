@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   CheckCircle2,
   Clock3,
+  Copy,
   ExternalLink,
   Loader2,
   PackageOpen,
@@ -487,14 +488,36 @@ export function LiandongPaymentDialog({
     paymentPageAttempt,
   ])
 
+  const copyFallbackContact = async () => {
+    if (!order?.fallback_contact) return
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard API unavailable')
+      await navigator.clipboard.writeText(order.fallback_contact)
+      toast.success(t('Payment contact copied'))
+    } catch {
+      toast.error(t('Copy failed. Please copy the payment contact manually.'))
+    }
+  }
+
   const openPaymentPage = async () => {
-    if (!order?.payment_url) return
+    if (!order) return
     const popup = window.open('', '_blank')
     if (!popup) {
       toast.error(t('Operation failed'))
       return
     }
     popup.opener = null
+
+    if (order.fallback_url) {
+      await copyFallbackContact()
+      popup.location.replace(order.fallback_url)
+      return
+    }
+
+    if (!order.payment_url) {
+      popup.close()
+      return
+    }
 
     const page = paymentPage || (await loadPaymentPage(order.payment_url))
     if (!page) {
@@ -522,6 +545,8 @@ export function LiandongPaymentDialog({
     order.payment_status === 'pending'
   const showPaymentButton =
     !!order?.payment_url && order.payment_status === 'pending' && !showIframe
+  const showFallbackPayment =
+    !!order?.fallback_url && order.payment_status === 'pending'
   const isFulfilled = order?.fulfillment_status === 'fulfilled'
   const requiresAttention =
     !!order &&
@@ -563,7 +588,7 @@ export function LiandongPaymentDialog({
               {t('Refresh status')}
             </Button>
           )}
-          {order?.payment_url && (
+          {(order?.payment_url || order?.fallback_url) && (
             <Button variant='outline' onClick={() => void openPaymentPage()}>
               <ExternalLink className='h-4 w-4' />
               {t('Open payment page')}
@@ -741,6 +766,37 @@ export function LiandongPaymentDialog({
             </Alert>
           )}
 
+          {showFallbackPayment && (
+            <div className='space-y-3 rounded-md border p-4'>
+              <div>
+                <p className='font-medium'>{t('Payment contact')}</p>
+                <p className='text-muted-foreground mt-1 text-sm'>
+                  {t(
+                    'Enter this contact on the payment page so the order can be verified automatically.'
+                  )}
+                </p>
+              </div>
+              <div className='flex flex-wrap items-center gap-2'>
+                <code className='bg-muted min-w-0 flex-1 rounded px-3 py-2 font-mono text-sm break-all'>
+                  {order.fallback_contact}
+                </code>
+                <Button
+                  variant='outline'
+                  size='icon'
+                  title={t('Copy')}
+                  aria-label={t('Copy')}
+                  onClick={() => void copyFallbackContact()}
+                >
+                  <Copy className='h-4 w-4' />
+                </Button>
+              </div>
+              <Button className='w-full' onClick={() => void openPaymentPage()}>
+                <ExternalLink className='h-4 w-4' />
+                {t('Copy contact and open payment page')}
+              </Button>
+            </div>
+          )}
+
           {showIframe && paymentPageLoading && (
             <div className='text-muted-foreground flex min-h-[420px] items-center justify-center gap-2 rounded-md border text-sm'>
               <Loader2 className='h-5 w-5 animate-spin' />
@@ -780,6 +836,7 @@ export function LiandongPaymentDialog({
 
           {!isFulfilled &&
             !requiresAttention &&
+            !showFallbackPayment &&
             !showIframe &&
             !showPaymentButton && (
               <div className='text-muted-foreground flex min-h-32 items-center justify-center gap-2 text-sm'>

@@ -119,6 +119,8 @@ type LiandongPaymentView struct {
 	PaymentStatus             string `json:"payment_status"`
 	FulfillmentStatus         string `json:"fulfillment_status"`
 	PaymentURL                string `json:"payment_url,omitempty"`
+	FallbackURL               string `json:"fallback_url,omitempty"`
+	FallbackContact           string `json:"fallback_contact,omitempty"`
 	IframeAllowed             bool   `json:"iframe_allowed"`
 	CreatedAt                 int64  `json:"created_at"`
 	PaidAt                    int64  `json:"paid_at,omitempty"`
@@ -258,8 +260,10 @@ func classifyLiandongUpstreamCall(
 }
 
 type liandongCreateError struct {
-	definitive bool
-	err        error
+	definitive  bool
+	refreshAuth bool
+	fallback    bool
+	err         error
 }
 
 type liandongQueryError struct {
@@ -296,6 +300,7 @@ func (e *liandongProviderRejection) Error() string {
 }
 
 type liandongVerification struct {
+	ProviderTradeNo  string
 	Paid             bool
 	ReviewRequired   bool
 	SanitizedSummary string
@@ -322,6 +327,7 @@ type liandongCreateResponseData struct {
 type liandongOrderRecord struct {
 	TradeNo   string          `json:"trade_no"`
 	TradeNoV2 string          `json:"tradeNo"`
+	Contact   string          `json:"contact"`
 	Status    json.RawMessage `json:"status"`
 }
 
@@ -744,12 +750,74 @@ func (c *liandongClient) createOrder(
 	tradeNo, err := parseLiandongCreateTradeNoForBaseURL(responseBody, c.baseURL)
 	if err != nil {
 		var rejection *liandongProviderRejection
+		browserVerification := isLiandongBrowserVerificationPage(responseBody)
 		return "", &liandongCreateError{
-			definitive: errors.As(err, &rejection),
-			err:        err,
+			definitive:  browserVerification || errors.As(err, &rejection),
+			refreshAuth: browserVerification,
+			fallback:    browserVerification,
+			err:         err,
 		}
 	}
 	return tradeNo, nil
+}
+
+func (c *liandongClient) createOrderWithSettings(
+	ctx context.Context,
+	goodsKey string,
+	contact string,
+	juuid string,
+	settingsSnapshot setting.LiandongPaymentSettings,
+) (string, error) {
+	if settingsSnapshot.AuthMode == setting.LiandongAuthModeCredentials {
+		if c.httpClient == nil || c.httpClient.Jar == nil {
+			return "", &liandongCreateError{
+				definitive: true,
+				err:        errors.New("liandong cookie storage is unavailable"),
+			}
+		}
+		endpoint, endpointErr := liandongEndpointURL(c.baseURL, liandongCreatePath)
+		endpointURL, parseErr := url.Parse(endpoint)
+		if endpointErr != nil {
+			return "", &liandongCreateError{definitive: true, err: endpointErr}
+		}
+		if parseErr != nil {
+			return "", &liandongCreateError{definitive: true, err: parseErr}
+		}
+		if len(c.httpClient.Jar.Cookies(endpointURL)) == 0 {
+			if _, err := c.refreshMerchantToken(
+				ctx,
+				strings.TrimSpace(settingsSnapshot.MerchantToken),
+			); err != nil {
+				return "", &liandongCreateError{
+					definitive: true,
+					err:        fmt.Errorf("liandong login before order creation failed: %w", err),
+				}
+			}
+		}
+	}
+
+	tradeNo, err := c.createOrder(ctx, goodsKey, contact, juuid)
+	if err == nil || settingsSnapshot.AuthMode != setting.LiandongAuthModeCredentials {
+		return tradeNo, err
+	}
+	var createErr *liandongCreateError
+	if !errors.As(err, &createErr) || !createErr.refreshAuth {
+		return "", err
+	}
+	if _, refreshErr := c.refreshMerchantToken(
+		ctx,
+		strings.TrimSpace(settingsSnapshot.MerchantToken),
+	); refreshErr != nil {
+		return "", &liandongCreateError{
+			definitive: true,
+			fallback:   true,
+			err: fmt.Errorf(
+				"provider verification blocked order creation and login refresh failed: %w",
+				refreshErr,
+			),
+		}
+	}
+	return c.createOrder(ctx, goodsKey, contact, juuid)
 }
 
 func (c *liandongClient) probePaymentPage(
@@ -992,19 +1060,32 @@ func (c *liandongClient) queryOrderWithSettings(
 	settingsSnapshot setting.LiandongPaymentSettings,
 	order *model.LiandongOrder,
 ) (*liandongVerification, error) {
-	if order == nil || order.ProviderTradeNo == nil {
-		return nil, errors.New("provider trade number is missing")
+	if order == nil {
+		return nil, errors.New("liandong order is missing")
 	}
 	payload := struct {
 		Current  int    `json:"current"`
 		PageSize int    `json:"pageSize"`
 		Status   int    `json:"status"`
-		TradeNo  string `json:"trade_no"`
+		TradeNo  string `json:"trade_no,omitempty"`
+		Contact  string `json:"contact,omitempty"`
 	}{
 		Current:  1,
-		PageSize: 1,
+		PageSize: 10,
 		Status:   999,
-		TradeNo:  *order.ProviderTradeNo,
+	}
+	expectedTradeNo := ""
+	expectedContact := ""
+	if order.ProviderTradeNo != nil {
+		expectedTradeNo = strings.TrimSpace(*order.ProviderTradeNo)
+		payload.TradeNo = expectedTradeNo
+		payload.PageSize = 1
+	} else {
+		expectedContact = strings.TrimSpace(order.ContactSnapshot)
+		if !model.ValidLiandongContact(expectedContact) {
+			return nil, errors.New("provider order identity is missing")
+		}
+		payload.Contact = expectedContact
 	}
 	body, err := common.Marshal(payload)
 	if err != nil {
@@ -1026,7 +1107,11 @@ func (c *liandongClient) queryOrderWithSettings(
 			err:        fmt.Errorf("provider returned HTTP %d", statusCode),
 		}
 	}
-	verification, err := parseLiandongOrderVerification(responseBody, *order.ProviderTradeNo)
+	verification, err := parseLiandongOrderVerificationByIdentity(
+		responseBody,
+		expectedTradeNo,
+		expectedContact,
+	)
 	if err != nil {
 		return nil, &liandongQueryError{systemic: true, err: err}
 	}
@@ -1336,8 +1421,13 @@ func invalidLiandongJSONResponse(kind string, body []byte) error {
 
 func isLiandongBrowserVerificationPage(body []byte) bool {
 	normalized := bytes.ToLower(normalizeLiandongJSONBody(body))
-	return bytes.Contains(normalized, []byte("<script")) &&
+	acwChallenge := bytes.Contains(normalized, []byte("<script")) &&
 		bytes.Contains(normalized, []byte("var arg1="))
+	aliyunChallenge := bytes.Contains(normalized, []byte("_waf_is_mobile")) &&
+		(bytes.Contains(normalized, []byte("aliyuncaptcha")) ||
+			bytes.Contains(normalized, []byte("aliyun-captcha")) ||
+			bytes.Contains(normalized, []byte("waf_nc_h5_block")))
+	return acwChallenge || aliyunChallenge
 }
 
 func (c *liandongClient) applyLiandongBrowserVerificationCookie(
@@ -1525,9 +1615,18 @@ func parseLiandongCreateTradeNoForBaseURL(
 }
 
 func parseLiandongOrderVerification(body []byte, expectedTradeNo string) (*liandongVerification, error) {
+	return parseLiandongOrderVerificationByIdentity(body, expectedTradeNo, "")
+}
+
+func parseLiandongOrderVerificationByIdentity(
+	body []byte,
+	expectedTradeNo string,
+	expectedContact string,
+) (*liandongVerification, error) {
 	var payload liandongOrderListResponse
+	body = normalizeLiandongJSONBody(body)
 	if err := common.Unmarshal(body, &payload); err != nil {
-		return nil, errors.New("provider order response is invalid")
+		return nil, invalidLiandongJSONResponse("order", body)
 	}
 	codeIndicatesRejection := false
 	if len(payload.Code) > 0 && string(payload.Code) != "null" {
@@ -1561,19 +1660,41 @@ func parseLiandongOrderVerification(body []byte, expectedTradeNo string) (*liand
 			}
 		}
 	}
-	if len(records) == 0 {
+	expectedTradeNo = strings.TrimSpace(expectedTradeNo)
+	expectedContact = strings.TrimSpace(expectedContact)
+	matched := make([]liandongOrderRecord, 0, 1)
+	for _, record := range records {
+		tradeNo := strings.TrimSpace(record.TradeNo)
+		if tradeNo == "" {
+			tradeNo = strings.TrimSpace(record.TradeNoV2)
+		}
+		if expectedTradeNo != "" && tradeNo == expectedTradeNo {
+			matched = append(matched, record)
+			continue
+		}
+		if expectedTradeNo == "" &&
+			expectedContact != "" &&
+			strings.TrimSpace(record.Contact) == expectedContact {
+			matched = append(matched, record)
+		}
+	}
+	if len(matched) == 0 {
+		if len(records) > 0 && expectedTradeNo != "" {
+			return &liandongVerification{ReviewRequired: true}, nil
+		}
 		return &liandongVerification{}, nil
 	}
-	if len(records) != 1 {
+	if len(matched) != 1 {
 		return &liandongVerification{ReviewRequired: true}, nil
 	}
 
-	record := records[0]
+	record := matched[0]
 	tradeNo := strings.TrimSpace(record.TradeNo)
 	if tradeNo == "" {
 		tradeNo = strings.TrimSpace(record.TradeNoV2)
 	}
-	if tradeNo != expectedTradeNo {
+	if !liandongTradeNoPattern.MatchString(tradeNo) ||
+		(expectedTradeNo != "" && tradeNo != expectedTradeNo) {
 		return &liandongVerification{ReviewRequired: true}, nil
 	}
 	status, err := parseLiandongOrderStatus(record.Status)
@@ -1588,6 +1709,7 @@ func parseLiandongOrderVerification(body []byte, expectedTradeNo string) (*liand
 		return nil, err
 	}
 	return &liandongVerification{
+		ProviderTradeNo:  tradeNo,
 		Paid:             status == 1,
 		SanitizedSummary: string(summaryJSON),
 	}, nil
@@ -1897,6 +2019,25 @@ func liandongPaymentURL(baseURL string, providerTradeNo string) string {
 	return endpoint + "?trade_no=" + url.QueryEscape(providerTradeNo)
 }
 
+func liandongProductURL(baseURL string, goodsKey string) string {
+	goodsKey = strings.TrimSpace(goodsKey)
+	if goodsKey == "" || len(goodsKey) > 128 {
+		return ""
+	}
+	normalizedBaseURL, err := setting.NormalizeLiandongBaseURL(baseURL)
+	if err != nil {
+		return ""
+	}
+	parsed, err := url.Parse(normalizedBaseURL)
+	if err != nil {
+		return ""
+	}
+	basePath := strings.TrimRight(parsed.Path, "/")
+	parsed.Path = basePath + "/item/" + goodsKey
+	parsed.RawPath = parsed.EscapedPath()
+	return parsed.String()
+}
+
 func liandongEndpointURL(baseURL string, path string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil ||
@@ -2080,10 +2221,20 @@ func LiandongOrderView(order *model.LiandongOrder) LiandongPaymentView {
 	}
 	if gatewayEnabled &&
 		(order.PaymentStatus == model.LiandongPaymentStatusPending ||
-			order.PaymentStatus == model.LiandongPaymentStatusCreateUnknown) &&
-		order.ProviderTradeNo != nil {
-		view.PaymentURL = "/api/payment/liandong/orders/" +
-			url.PathEscape(order.LocalTradeNo) + "/page"
+			order.PaymentStatus == model.LiandongPaymentStatusCreateUnknown) {
+		if order.ProviderTradeNo != nil {
+			view.PaymentURL = "/api/payment/liandong/orders/" +
+				url.PathEscape(order.LocalTradeNo) + "/page"
+		} else if order.PaymentStatus == model.LiandongPaymentStatusPending {
+			view.FallbackURL = liandongProductURL(
+				settingsSnapshot.BaseURL,
+				order.GoodsKeySnapshot,
+			)
+			if view.FallbackURL != "" {
+				view.FallbackContact = order.ContactSnapshot
+				view.IframeAllowed = false
+			}
+		}
 	}
 	return view
 }
@@ -2288,18 +2439,15 @@ func createLiandongPayment(
 		return nil, errors.New("Liandong gateway disabled")
 	}
 
-	providerTradeNo, createErr := client.createOrder(
+	providerTradeNo, createErr := client.createOrderWithSettings(
 		withLiandongMonitor(ctx, "user_order_create", order.LocalTradeNo),
 		order.GoodsKeySnapshot,
 		order.ContactSnapshot,
 		order.JUUIDSnapshot,
+		latestSettings,
 	)
 	if createErr != nil {
-		status := model.LiandongPaymentStatusCreateUnknown
 		var typedErr *liandongCreateError
-		if errors.As(createErr, &typedErr) && typedErr.definitive {
-			status = model.LiandongPaymentStatusCreateFailed
-		}
 		diagnostic := sanitizeLiandongDiagnostic(
 			createErr.Error(),
 			order.GoodsKeySnapshot,
@@ -2312,6 +2460,28 @@ func createLiandongPayment(
 		)
 		if diagnostic == "" {
 			diagnostic = "liandong provider returned no diagnostic information"
+		}
+		if errors.As(createErr, &typedErr) &&
+			typedErr.fallback &&
+			liandongProductURL(latestSettings.BaseURL, order.GoodsKeySnapshot) != "" {
+			if markErr := model.MarkLiandongCreateResult(
+				order.LocalTradeNo,
+				nil,
+				model.LiandongPaymentStatusPending,
+				diagnostic,
+			); markErr != nil {
+				return nil, errors.New("Failed to create payment order")
+			}
+			order.PaymentStatus = model.LiandongPaymentStatusPending
+			order.LastError = diagnostic
+			WakeSystemTaskRunner()
+			view := LiandongOrderView(order)
+			return &view, nil
+		}
+
+		status := model.LiandongPaymentStatusCreateUnknown
+		if errors.As(createErr, &typedErr) && typedErr.definitive {
+			status = model.LiandongPaymentStatusCreateFailed
 		}
 		if markErr := model.MarkLiandongCreateFailure(
 			order.LocalTradeNo,
@@ -2356,6 +2526,34 @@ func createLiandongPayment(
 	return &view, nil
 }
 
+func bindLiandongVerificationTradeNo(
+	order *model.LiandongOrder,
+	verification *liandongVerification,
+) error {
+	if order == nil || verification == nil {
+		return model.ErrLiandongOrderBusy
+	}
+	providerTradeNo := strings.TrimSpace(verification.ProviderTradeNo)
+	if providerTradeNo == "" {
+		return nil
+	}
+	if order.ProviderTradeNo != nil {
+		if strings.TrimSpace(*order.ProviderTradeNo) != providerTradeNo {
+			return model.ErrLiandongOrderReviewRequired
+		}
+		return nil
+	}
+	if err := model.BindClaimedLiandongProviderTradeNo(
+		order.LocalTradeNo,
+		order.CheckLockUntil,
+		providerTradeNo,
+	); err != nil {
+		return err
+	}
+	order.ProviderTradeNo = &providerTradeNo
+	return nil
+}
+
 func closeLiandongOrderAfterVerification(
 	ctx context.Context,
 	client *liandongClient,
@@ -2363,7 +2561,7 @@ func closeLiandongOrderAfterVerification(
 	userID int,
 	reason string,
 ) (bool, error) {
-	if order == nil || order.ProviderTradeNo == nil {
+	if order == nil {
 		return false, model.ErrLiandongOrderNotFound
 	}
 	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
@@ -2425,6 +2623,10 @@ func closeLiandongOrderAfterVerification(
 		_ = model.ReleaseLiandongOrderCheck(claimed.LocalTradeNo, claimed.CheckLockUntil)
 		return false, errors.New("liandong provider returned no verification result")
 	}
+	if err := bindLiandongVerificationTradeNo(claimed, verification); err != nil {
+		_ = model.ReleaseLiandongOrderCheck(claimed.LocalTradeNo, claimed.CheckLockUntil)
+		return false, err
+	}
 	if verification.ReviewRequired {
 		if err := model.MarkLiandongOrderReviewRequired(
 			claimed.LocalTradeNo,
@@ -2437,6 +2639,10 @@ func closeLiandongOrderAfterVerification(
 		return false, model.ErrLiandongOrderReviewRequired
 	}
 	if verification.Paid {
+		if claimed.ProviderTradeNo == nil {
+			_ = model.ReleaseLiandongOrderCheck(claimed.LocalTradeNo, claimed.CheckLockUntil)
+			return false, model.ErrLiandongOrderReviewRequired
+		}
 		transition, err := model.ApplyClaimedLiandongPaidTradeNo(
 			*claimed.ProviderTradeNo,
 			claimed.CheckLockUntil,
@@ -2496,7 +2702,6 @@ func RefreshLiandongPaymentForUser(
 	}
 	if (order.PaymentStatus != model.LiandongPaymentStatusPending &&
 		order.PaymentStatus != model.LiandongPaymentStatusCreateUnknown) ||
-		order.ProviderTradeNo == nil ||
 		!settingsSnapshot.Enabled ||
 		!settingsSnapshot.ReconcileEnabled ||
 		!liandongAuthenticationConfigured(settingsSnapshot) {
@@ -2566,6 +2771,18 @@ func RefreshLiandongPaymentForUser(
 		_ = model.ReleaseLiandongOrderCheck(claimed.LocalTradeNo, claimed.CheckLockUntil)
 		return nil, errors.New("liandong provider returned no verification result")
 	}
+	if err := bindLiandongVerificationTradeNo(claimed, verification); err != nil {
+		_ = model.ReleaseLiandongOrderCheck(claimed.LocalTradeNo, claimed.CheckLockUntil)
+		if errors.Is(err, model.ErrLiandongOrderBusy) {
+			current, reloadErr := model.GetLiandongOrderForUser(userID, localTradeNo)
+			if reloadErr != nil {
+				return nil, reloadErr
+			}
+			view := LiandongOrderView(current)
+			return &view, nil
+		}
+		return nil, err
+	}
 	if verification.ReviewRequired {
 		_ = model.MarkLiandongOrderReviewRequired(
 			claimed.LocalTradeNo,
@@ -2573,7 +2790,7 @@ func RefreshLiandongPaymentForUser(
 			verification.SanitizedSummary,
 			"provider order identity is ambiguous or invalid",
 		)
-	} else if verification.Paid {
+	} else if verification.Paid && claimed.ProviderTradeNo != nil {
 		transition, applyErr := model.ApplyClaimedLiandongPaidTradeNo(
 			*claimed.ProviderTradeNo,
 			claimed.CheckLockUntil,
@@ -2621,9 +2838,6 @@ func CloseLiandongPaymentForUser(
 	case model.LiandongPaymentStatusCreating:
 		return nil, model.ErrLiandongOrderBusy
 	case model.LiandongPaymentStatusPending, model.LiandongPaymentStatusCreateUnknown:
-		if order.ProviderTradeNo == nil {
-			return nil, model.ErrLiandongOrderBusy
-		}
 		if _, err := closeLiandongOrderAfterVerification(
 			ctx,
 			newLiandongClient(),
@@ -2975,9 +3189,7 @@ func runLiandongReconcileOnce(ctx context.Context, client *liandongClient) (map[
 		case !liandongAuthenticationConfigured(settingsSnapshot):
 			reconcileErr = errors.New("liandong authentication is not configured")
 		default:
-			if err := closeExpiredLiandongOrdersWithoutProvider(ctx, result); err != nil {
-				reconcileErr = err
-			} else if err := reconcileStaleLiandongCreatingOrders(ctx, result); err != nil {
+			if err := reconcileStaleLiandongCreatingOrders(ctx, result); err != nil {
 				reconcileErr = err
 			} else if err := reconcilePendingLiandongOrders(ctx, client, result); err != nil {
 				reconcileErr = err
@@ -2993,39 +3205,6 @@ func runLiandongReconcileOnce(ctx context.Context, client *liandongClient) (map[
 	}
 	return result, errors.Join(reconcileErr, fulfillErr)
 }
-
-func closeExpiredLiandongOrdersWithoutProvider(ctx context.Context, result map[string]int) error {
-	orders, err := model.FindExpiredLiandongOrdersWithoutProvider(liandongReconcileBatchSize)
-	if err != nil {
-		return err
-	}
-	for _, order := range orders {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
-		if err != nil {
-			return err
-		}
-		if !settingsSnapshot.Enabled || !settingsSnapshot.ReconcileEnabled {
-			return nil
-		}
-		if err := model.CloseLiandongOrderForUser(
-			order.UserID,
-			order.LocalTradeNo,
-			"payment timeout",
-		); err != nil {
-			if errors.Is(err, model.ErrLiandongOrderBusy) ||
-				errors.Is(err, model.ErrLiandongOrderNotFound) {
-				continue
-			}
-			return err
-		}
-		result["processed"]++
-	}
-	return nil
-}
-
 func reconcileStaleLiandongCreatingOrders(ctx context.Context, result map[string]int) error {
 	orders, err := model.FindStaleCreatingLiandongOrders(liandongReconcileBatchSize)
 	if err != nil {
@@ -3113,6 +3292,7 @@ func reconcilePendingLiandongOrders(
 		if err != nil || status != 1 {
 			continue
 		}
+		contact := strings.TrimSpace(record.Contact)
 		summary, err := common.Marshal(map[string]any{
 			"trade_no": tradeNo,
 			"status":   status,
@@ -3121,6 +3301,10 @@ func reconcilePendingLiandongOrders(
 			return err
 		}
 		claimed, err := model.ClaimLiandongOrderByProviderTradeNo(tradeNo)
+		if errors.Is(err, model.ErrLiandongOrderNotFound) &&
+			model.ValidLiandongContact(contact) {
+			claimed, err = model.ClaimLiandongFallbackOrderByContact(contact, tradeNo)
+		}
 		if errors.Is(err, model.ErrLiandongOrderNotFound) ||
 			errors.Is(err, model.ErrLiandongOrderBusy) {
 			continue
@@ -3204,9 +3388,6 @@ func reconcileExpiredLiandongOrders(
 			return nil
 		}
 		result["processed"]++
-		if dueOrder.ProviderTradeNo == nil {
-			continue
-		}
 		paid, err := closeLiandongOrderAfterVerification(
 			ctx,
 			client,

@@ -193,10 +193,10 @@ func claimLiandongOrderForReconcile(t *testing.T, localTradeNo string) *Liandong
 }
 
 func TestValidLiandongContact(t *testing.T) {
-	assert.True(t, validLiandongContact("123456789012"))
-	assert.False(t, validLiandongContact("023456789012"))
-	assert.False(t, validLiandongContact("12345678901"))
-	assert.False(t, validLiandongContact("12345678901x"))
+	assert.True(t, ValidLiandongContact("123456789012"))
+	assert.False(t, ValidLiandongContact("023456789012"))
+	assert.False(t, ValidLiandongContact("12345678901"))
+	assert.False(t, ValidLiandongContact("12345678901x"))
 }
 
 func TestValidateLiandongProductRejectsZeroExpectedAmount(t *testing.T) {

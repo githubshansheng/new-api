@@ -149,7 +149,7 @@ chmod +x new-api.sh
 | `start` | Start the service; automatically build it first when the binary is missing |
 | `stop` | Stop the managed background service |
 | `restart` | Restart the service without rebuilding |
-| `rebuild` | Stop the service, rebuild all source code, and start it again |
+| `rebuild` | Build a replacement while the service remains available, then stop, replace the binary, and start it again |
 | `status` | Show the process and HTTP health status |
 | `logs` | Follow the managed process stdout and stderr logs |
 
@@ -166,6 +166,10 @@ for HTTPS, domain routing, or load balancing.
 Build outputs are written to `build/new-api.exe` on Windows and `build/new-api`
 on Linux. Process metadata and stdout/stderr logs are stored in `.run/`, while
 application logs are stored in `logs/`.
+
+During `rebuild`, frontend and backend compilation finishes before the running
+service is stopped. If compilation fails, the current service remains running;
+downtime is limited to replacing the completed binary and restarting it.
 
 ### Using Docker Compose (Recommended)
 

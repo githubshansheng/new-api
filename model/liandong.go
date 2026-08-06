@@ -387,7 +387,7 @@ func CreateLiandongOrderWithTimeout(
 	if userID <= 0 || productID <= 0 {
 		return nil, errors.New("invalid user or product")
 	}
-	if !validLiandongContact(contact) || strings.TrimSpace(juuid) == "" {
+	if !ValidLiandongContact(contact) || strings.TrimSpace(juuid) == "" {
 		return nil, errors.New("invalid liandong order identity")
 	}
 	if timeoutMinutes < setting.MinLiandongPaymentTimeoutMinutes ||
@@ -539,7 +539,7 @@ func CreateLiandongOrderWithTimeout(
 	return &LiandongOrderCreateResult{Order: &createdOrder}, nil
 }
 
-func validLiandongContact(contact string) bool {
+func ValidLiandongContact(contact string) bool {
 	if len(contact) != 12 || contact[0] == '0' {
 		return false
 	}
@@ -692,7 +692,7 @@ func ClaimLiandongPendingOrderAfter(localTradeNo string, minimumIntervalSeconds 
 	now := common.GetTimestamp()
 	query := DB.Model(&LiandongOrder{}).
 		Where(
-			"local_trade_no = ? AND payment_status IN ? AND provider_trade_no IS NOT NULL AND (check_lock_until = 0 OR check_lock_until < ?)",
+			"local_trade_no = ? AND payment_status IN ? AND (check_lock_until = 0 OR check_lock_until < ?)",
 			localTradeNo,
 			[]string{LiandongPaymentStatusPending, LiandongPaymentStatusCreateUnknown},
 			now,
@@ -721,7 +721,7 @@ func ClaimLiandongUnsettledOrder(localTradeNo string) (*LiandongOrder, error) {
 	now := common.GetTimestamp()
 	result := DB.Model(&LiandongOrder{}).
 		Where(
-			"local_trade_no = ? AND payment_status IN ? AND provider_trade_no IS NOT NULL AND (check_lock_until = 0 OR check_lock_until < ?)",
+			"local_trade_no = ? AND payment_status IN ? AND (check_lock_until = 0 OR check_lock_until < ?)",
 			localTradeNo,
 			[]string{LiandongPaymentStatusPending, LiandongPaymentStatusCreateUnknown},
 			now,
@@ -777,6 +777,98 @@ func ClaimLiandongOrderByProviderTradeNo(providerTradeNo string) (*LiandongOrder
 		return nil, err
 	}
 	return &order, nil
+}
+
+func ClaimLiandongFallbackOrderByContact(
+	contact string,
+	providerTradeNo string,
+) (*LiandongOrder, error) {
+	contact = strings.TrimSpace(contact)
+	providerTradeNo = strings.TrimSpace(providerTradeNo)
+	if !ValidLiandongContact(contact) || providerTradeNo == "" || len(providerTradeNo) > 128 {
+		return nil, ErrLiandongOrderNotFound
+	}
+
+	var claimed LiandongOrder
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		now := common.GetTimestamp()
+		var order LiandongOrder
+		if err := lockForUpdate(tx).
+			Where(
+				"contact_snapshot = ? AND provider_trade_no IS NULL AND payment_status <> ? AND late_payment = ?",
+				contact,
+				LiandongPaymentStatusPaid,
+				false,
+			).
+			First(&order).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrLiandongOrderNotFound
+			}
+			return err
+		}
+		if order.CheckLockUntil >= now {
+			return ErrLiandongOrderBusy
+		}
+		lockUntil := now + 30
+		result := tx.Model(&LiandongOrder{}).
+			Where(
+				"id = ? AND provider_trade_no IS NULL AND payment_status = ? AND late_payment = ? AND (check_lock_until = 0 OR check_lock_until < ?)",
+				order.ID,
+				order.PaymentStatus,
+				false,
+				now,
+			).
+			Updates(map[string]any{
+				"provider_trade_no": providerTradeNo,
+				"check_lock_until":  lockUntil,
+				"updated_at":        now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrLiandongOrderBusy
+		}
+		order.ProviderTradeNo = &providerTradeNo
+		order.CheckLockUntil = lockUntil
+		order.UpdatedAt = now
+		claimed = order
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &claimed, nil
+}
+
+func BindClaimedLiandongProviderTradeNo(
+	localTradeNo string,
+	checkLockUntil int64,
+	providerTradeNo string,
+) error {
+	providerTradeNo = strings.TrimSpace(providerTradeNo)
+	if checkLockUntil <= 0 || providerTradeNo == "" || len(providerTradeNo) > 128 {
+		return ErrLiandongOrderBusy
+	}
+	result := DB.Model(&LiandongOrder{}).
+		Where(
+			"local_trade_no = ? AND payment_status IN ? AND check_lock_until = ? AND (provider_trade_no IS NULL OR provider_trade_no = ?)",
+			localTradeNo,
+			[]string{LiandongPaymentStatusPending, LiandongPaymentStatusCreateUnknown},
+			checkLockUntil,
+			providerTradeNo,
+		).
+		Updates(map[string]any{
+			"provider_trade_no": providerTradeNo,
+			"updated_at":        common.GetTimestamp(),
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrLiandongOrderBusy
+	}
+	return nil
 }
 
 func ClaimLiandongClosableOrder(localTradeNo string) (*LiandongOrder, error) {
@@ -1120,12 +1212,17 @@ func HasLiandongWork(
 	if reconcileEnabled {
 		conditions = append(
 			conditions,
-			"(payment_status <> ? AND provider_trade_no IS NOT NULL AND late_payment = ?)",
+			"((provider_trade_no IS NOT NULL AND payment_status <> ?) OR (provider_trade_no IS NULL AND payment_status IN ?)) AND late_payment = ?",
 			"(payment_status = ? AND created_at <= ?)",
 		)
 		args = append(
 			args,
 			LiandongPaymentStatusPaid,
+			[]string{
+				LiandongPaymentStatusPending,
+				LiandongPaymentStatusCreateUnknown,
+				LiandongPaymentStatusClosed,
+			},
 			false,
 			LiandongPaymentStatusCreating,
 			staleCreatingBefore,

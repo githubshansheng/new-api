@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -242,6 +243,19 @@ func TestParseLiandongOrderVerification(t *testing.T) {
 	}
 }
 
+func TestParseLiandongOrderVerificationMatchesFallbackContact(t *testing.T) {
+	verification, err := parseLiandongOrderVerificationByIdentity(
+		[]byte(`{"list":[{"trade_no":"TRADE-FALLBACK-001","contact":"123456789012","status":1}]}`),
+		"",
+		"123456789012",
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, verification)
+	assert.True(t, verification.Paid)
+	assert.Equal(t, "TRADE-FALLBACK-001", verification.ProviderTradeNo)
+}
+
 func TestParseLiandongOrderRecordsAcceptsEmptyNestedList(t *testing.T) {
 	records, err := parseLiandongOrderRecords(
 		[]byte(`{"data":{"records":[],"total":0}}`),
@@ -277,12 +291,118 @@ func TestParseLiandongGoodsClassifiesHTMLWithoutLeakingBody(t *testing.T) {
 }
 
 func TestParseLiandongGoodsClassifiesBrowserVerificationPage(t *testing.T) {
-	body := []byte(`<html><script>var arg1='challenge';</script></html>`)
+	body := []byte(`<html><script>window._waf_is_mobile=false</script><div id="waf_nc_h5_block" class="aliyun-captcha"></div></html>`)
 
 	_, err := parseLiandongGoods(body)
 
 	require.ErrorContains(t, err, "upstream browser verification page")
 	assert.Equal(t, "<browser verification page omitted>", liandongProviderResponseDiagnostic(body))
+}
+
+func TestLiandongCreateOrderLogsInWhenCredentialCookieJarIsEmpty(t *testing.T) {
+	resetLiandongServiceFixtures(t)
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongAuthMode":      setting.LiandongAuthModeCredentials,
+		"LiandongUsername":      "merchant-user",
+		"LiandongPassword":      "merchant-password",
+		"LiandongMerchantToken": "stale-token",
+	}))
+
+	var loginRequests atomic.Int32
+	var createRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case liandongLoginPath:
+			loginRequests.Add(1)
+			http.SetCookie(w, &http.Cookie{Name: "PHPSESSID", Value: "fresh-session", Path: "/"})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"fresh-token"}`))
+		case liandongCreatePath:
+			createRequests.Add(1)
+			cookie, err := r.Cookie("PHPSESSID")
+			require.NoError(t, err)
+			assert.Equal(t, "fresh-session", cookie.Value)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"payUrl":"/shopApi/Pay/payment?trade_no=TRADE123"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	httpClient := server.Client()
+	httpClient.Jar = jar
+	client := &liandongClient{httpClient: httpClient, baseURL: server.URL}
+	tradeNo, err := client.createOrderWithSettings(
+		context.Background(),
+		"goods-key",
+		"123456789012",
+		"merchant-id",
+		setting.LiandongPaymentSettings{
+			AuthMode:      setting.LiandongAuthModeCredentials,
+			MerchantToken: "stale-token",
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "TRADE123", tradeNo)
+	assert.EqualValues(t, 1, loginRequests.Load())
+	assert.EqualValues(t, 1, createRequests.Load())
+}
+
+func TestCreateLiandongPaymentFallsBackToProviderProductPageWhenWAFBlocksCreation(t *testing.T) {
+	resetLiandongServiceFixtures(t)
+	user := &model.User{
+		Username: "liandong-fallback-user",
+		Password: "password",
+		Status:   common.UserStatusEnabled,
+		Role:     common.RoleCommonUser,
+		Group:    "default",
+		AffCode:  common.GetRandomString(16),
+	}
+	require.NoError(t, model.DB.Create(user).Error)
+	product := &model.LiandongProduct{
+		BusinessType:        model.LiandongBusinessTypeQuota,
+		GoodsType:           "card",
+		Name:                "Fallback product",
+		GoodsKey:            "fallback-goods",
+		QuotaAmount:         100,
+		ExpectedAmountMinor: 100,
+		Currency:            "CNY",
+		InventoryMode:       model.LiandongInventoryModeUnlimited,
+		Enabled:             true,
+	}
+	require.NoError(t, model.DB.Create(product).Error)
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongEnabled":       "true",
+		"LiandongCreateEnabled": "true",
+		"LiandongJUUID":         "test-merchant-id",
+	}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><script>window._waf_is_mobile=false</script><div id="waf_nc_h5_block" class="aliyun-captcha"></div></html>`))
+	}))
+	defer server.Close()
+
+	view, err := createLiandongPayment(
+		context.Background(),
+		user.Id,
+		product.ID,
+		&liandongClient{httpClient: server.Client(), baseURL: server.URL},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, view)
+	assert.Equal(t, model.LiandongPaymentStatusPending, view.PaymentStatus)
+	assert.Equal(t, "https://pay.ldxp.cn/item/fallback-goods", view.FallbackURL)
+	assert.Len(t, view.FallbackContact, 12)
+	assert.Empty(t, view.PaymentURL)
+	stored, err := model.GetLiandongOrder(view.LocalTradeNo)
+	require.NoError(t, err)
+	assert.Nil(t, stored.ProviderTradeNo)
 }
 
 func TestLiandongProviderResponseDiagnosticRedactsConfiguredSecrets(t *testing.T) {
@@ -850,6 +970,12 @@ func TestRunLiandongReconcileOnceReleasesExpiredReservedInventoryWithoutProvider
 		1,
 	)
 	require.NoError(t, err)
+	require.NoError(t, model.MarkLiandongCreateResult(
+		createResult.Order.LocalTradeNo,
+		nil,
+		model.LiandongPaymentStatusPending,
+		"provider WAF fallback",
+	))
 	require.NoError(t, model.DB.Model(&model.LiandongOrder{}).
 		Where("id = ?", createResult.Order.ID).
 		Update("expires_at", common.GetTimestamp()-1).Error)
@@ -868,7 +994,7 @@ func TestRunLiandongReconcileOnceReleasesExpiredReservedInventoryWithoutProvider
 	})
 
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), providerRequests.Load())
+	assert.Equal(t, int32(2), providerRequests.Load())
 	assert.Equal(t, 1, result["processed"])
 	order, err := model.GetLiandongOrder(createResult.Order.LocalTradeNo)
 	require.NoError(t, err)

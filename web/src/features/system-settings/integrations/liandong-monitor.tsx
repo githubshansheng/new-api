@@ -67,6 +67,7 @@ function operationLabel(operation: string, t: (key: string) => string): string {
   const labels: Record<string, string> = {
     create_order: 'Create payment order',
     payment_page_probe: 'Probe payment page',
+    query_payment_channels: 'Query payment channels',
     query_orders: 'Query payment status',
     query_goods: 'Query provider goods',
     login: 'Refresh provider login',

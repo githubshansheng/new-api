@@ -40,6 +40,7 @@ export type LiandongSettings = {
   client_poll_interval_seconds: number
   reconcile_batch_size: number
   payment_timeout_minutes: number
+  payment_channel_id: number
   payment_probe_enabled: boolean
   payment_probe_alert_email: string
   juuid: string

@@ -287,6 +287,7 @@ type liandongSettingsUpdateRequest struct {
 	ClientPollIntervalSeconds *int    `json:"client_poll_interval_seconds"`
 	ReconcileBatchSize        *int    `json:"reconcile_batch_size"`
 	PaymentTimeoutMinutes     *int    `json:"payment_timeout_minutes"`
+	PaymentChannelID          *int    `json:"payment_channel_id"`
 	PaymentProbeEnabled       *bool   `json:"payment_probe_enabled"`
 	PaymentProbeAlertEmail    *string `json:"payment_probe_alert_email"`
 	JUUID                     *string `json:"juuid"`
@@ -335,6 +336,7 @@ func GetLiandongSettings(c *gin.Context) {
 		"client_poll_interval_seconds": settingsSnapshot.ClientPollIntervalSeconds,
 		"reconcile_batch_size":         settingsSnapshot.ReconcileBatchSize,
 		"payment_timeout_minutes":      settingsSnapshot.PaymentTimeoutMinutes,
+		"payment_channel_id":           settingsSnapshot.PaymentChannelID,
 		"payment_probe_enabled":        settingsSnapshot.PaymentProbeEnabled,
 		"payment_probe_alert_email":    settingsSnapshot.PaymentProbeAlertEmail,
 		"juuid":                        settingsSnapshot.JUUID,
@@ -508,6 +510,15 @@ func UpdateLiandongSettings(c *gin.Context) {
 		}
 		updated.PaymentTimeoutMinutes = *req.PaymentTimeoutMinutes
 		values["LiandongPaymentTimeoutMinutes"] = strconv.Itoa(*req.PaymentTimeoutMinutes)
+	}
+	if req.PaymentChannelID != nil {
+		if *req.PaymentChannelID < setting.MinLiandongPaymentChannelID ||
+			*req.PaymentChannelID > setting.MaxLiandongPaymentChannelID {
+			common.ApiErrorMsg(c, "Payment channel ID must be between 1 and 2147483647")
+			return
+		}
+		updated.PaymentChannelID = *req.PaymentChannelID
+		values["LiandongPaymentChannelID"] = strconv.Itoa(*req.PaymentChannelID)
 	}
 	if req.PaymentProbeAlertEmail != nil {
 		email := strings.TrimSpace(*req.PaymentProbeAlertEmail)

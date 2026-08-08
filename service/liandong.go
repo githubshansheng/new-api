@@ -36,6 +36,7 @@ const (
 	liandongBaseURL                              = setting.DefaultLiandongBaseURL
 	liandongCreatePath                           = "/shopApi/Pay/order"
 	liandongPaymentPath                          = "/shopApi/Pay/payment"
+	liandongPaymentChannelPath                   = "/merchantApi/payment/channel"
 	liandongOrderListPath                        = "/merchantApi/order/list"
 	liandongGoodsListPath                        = "/merchantApi/Goods/list"
 	liandongLoginPath                            = "/merchantApi/user/login"
@@ -51,6 +52,8 @@ const (
 	liandongOperationWait                        = 15 * time.Second
 	liandongOperationRetry                       = 100 * time.Millisecond
 	liandongOrderQueryFailuresBeforeLoginRefresh = 3
+	liandongPaymentChannelRetryLimit             = 2
+	liandongPaymentChannelDisabledMessage        = "该商户未启用此支付渠道"
 )
 
 var liandongTradeNoPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{6,128}$`)
@@ -173,6 +176,8 @@ func liandongMonitorOperation(path string) string {
 		return "create_order"
 	case liandongPaymentPath:
 		return "payment_page_probe"
+	case liandongPaymentChannelPath:
+		return "query_payment_channels"
 	case liandongOrderListPath:
 		return "query_orders"
 	case liandongGoodsListPath:
@@ -246,6 +251,8 @@ func classifyLiandongUpstreamCall(
 	switch path {
 	case liandongCreatePath:
 		_, err = parseLiandongCreateTradeNoForBaseURL(responseBody, baseURL)
+	case liandongPaymentChannelPath:
+		_, err = parseLiandongEnabledPaymentChannelIDs(responseBody)
 	case liandongOrderListPath:
 		_, err = parseLiandongOrderRecords(responseBody)
 	case liandongGoodsListPath:
@@ -322,6 +329,23 @@ type liandongCreateResponseData struct {
 	PayURLV2  string `json:"pay_url"`
 	TradeNo   string `json:"trade_no"`
 	TradeNoV2 string `json:"tradeNo"`
+}
+
+type liandongPaymentChannel struct {
+	ID     int             `json:"id"`
+	Status json.RawMessage `json:"status"`
+}
+
+type liandongPaymentChannelResponse struct {
+	Code      json.RawMessage          `json:"code"`
+	Message   string                   `json:"msg"`
+	MessageV2 string                   `json:"message"`
+	Channel   []liandongPaymentChannel `json:"channel"`
+	Data      json.RawMessage          `json:"data"`
+}
+
+type liandongPaymentChannelData struct {
+	Channel []liandongPaymentChannel `json:"channel"`
 }
 
 type liandongOrderRecord struct {
@@ -699,6 +723,7 @@ func (c *liandongClient) createOrder(
 	goodsKey string,
 	contact string,
 	juuid string,
+	channelID int,
 ) (string, error) {
 	payload := struct {
 		GoodsKey   string            `json:"goods_key"`
@@ -711,7 +736,7 @@ func (c *liandongClient) createOrder(
 		GoodsKey:   goodsKey,
 		Quantity:   1,
 		CouponCode: "",
-		ChannelID:  1,
+		ChannelID:  channelID,
 		Contact:    contact,
 		Extend: map[string]string{
 			"juuid": juuid,
@@ -761,6 +786,98 @@ func (c *liandongClient) createOrder(
 	return tradeNo, nil
 }
 
+func isLiandongPaymentChannelDisabled(err error) bool {
+	var rejection *liandongProviderRejection
+	return errors.As(err, &rejection) &&
+		strings.Contains(rejection.message, liandongPaymentChannelDisabledMessage)
+}
+
+func (c *liandongClient) enabledPaymentChannelIDs(
+	ctx context.Context,
+	settingsSnapshot setting.LiandongPaymentSettings,
+) ([]int, error) {
+	body, err := common.Marshal(struct {
+		Code string `json:"code"`
+	}{Code: "Platform"})
+	if err != nil {
+		return nil, err
+	}
+	statusCode, responseBody, _, err := c.doAuthenticatedJSON(
+		ctx,
+		liandongPaymentChannelPath,
+		body,
+		settingsSnapshot,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return nil, &liandongQueryError{
+			statusCode: statusCode,
+			systemic:   true,
+			err:        fmt.Errorf("provider payment channels returned HTTP %d", statusCode),
+		}
+	}
+	return parseLiandongEnabledPaymentChannelIDs(responseBody)
+}
+
+func (c *liandongClient) createOrderWithAvailableChannels(
+	ctx context.Context,
+	goodsKey string,
+	contact string,
+	juuid string,
+	settingsSnapshot setting.LiandongPaymentSettings,
+) (string, error) {
+	channelIDs, err := c.enabledPaymentChannelIDs(ctx, settingsSnapshot)
+	if err != nil {
+		return "", &liandongCreateError{
+			definitive: true,
+			err:        fmt.Errorf("provider payment channels could not be loaded: %w", err),
+		}
+	}
+	if len(channelIDs) == 0 {
+		return "", &liandongCreateError{
+			definitive: true,
+			err:        errors.New("provider has no enabled payment channel"),
+		}
+	}
+
+	attempts := len(channelIDs)
+	if attempts > liandongPaymentChannelRetryLimit {
+		attempts = liandongPaymentChannelRetryLimit
+	}
+	var lastErr error
+	for index := 0; index < attempts; index++ {
+		channelID := channelIDs[index]
+		tradeNo, createErr := c.createOrder(
+			ctx,
+			goodsKey,
+			contact,
+			juuid,
+			channelID,
+		)
+		if createErr == nil {
+			if channelID != settingsSnapshot.PaymentChannelID {
+				if updateErr := model.UpdateOptionsBulk(map[string]string{
+					"LiandongPaymentChannelID": strconv.Itoa(channelID),
+				}); updateErr != nil {
+					common.SysError(fmt.Sprintf(
+						"failed to persist card marketplace payment channel %d: %v",
+						channelID,
+						updateErr,
+					))
+				}
+			}
+			return tradeNo, nil
+		}
+		lastErr = createErr
+		if !isLiandongPaymentChannelDisabled(createErr) {
+			return "", createErr
+		}
+	}
+	return "", lastErr
+}
+
 func (c *liandongClient) createOrderWithSettings(
 	ctx context.Context,
 	goodsKey string,
@@ -796,7 +913,27 @@ func (c *liandongClient) createOrderWithSettings(
 		}
 	}
 
-	tradeNo, err := c.createOrder(ctx, goodsKey, contact, juuid)
+	paymentChannelID := settingsSnapshot.PaymentChannelID
+	if paymentChannelID < setting.MinLiandongPaymentChannelID ||
+		paymentChannelID > setting.MaxLiandongPaymentChannelID {
+		paymentChannelID = setting.DefaultLiandongPaymentChannelID
+	}
+	tradeNo, err := c.createOrder(
+		ctx,
+		goodsKey,
+		contact,
+		juuid,
+		paymentChannelID,
+	)
+	if isLiandongPaymentChannelDisabled(err) {
+		return c.createOrderWithAvailableChannels(
+			ctx,
+			goodsKey,
+			contact,
+			juuid,
+			settingsSnapshot,
+		)
+	}
 	if err == nil || settingsSnapshot.AuthMode != setting.LiandongAuthModeCredentials {
 		return tradeNo, err
 	}
@@ -817,7 +954,23 @@ func (c *liandongClient) createOrderWithSettings(
 			),
 		}
 	}
-	return c.createOrder(ctx, goodsKey, contact, juuid)
+	tradeNo, err = c.createOrder(
+		ctx,
+		goodsKey,
+		contact,
+		juuid,
+		paymentChannelID,
+	)
+	if isLiandongPaymentChannelDisabled(err) {
+		return c.createOrderWithAvailableChannels(
+			ctx,
+			goodsKey,
+			contact,
+			juuid,
+			settingsSnapshot,
+		)
+	}
+	return tradeNo, err
 }
 
 func (c *liandongClient) probePaymentPage(
@@ -1179,13 +1332,18 @@ func (c *liandongClient) doAuthenticatedJSON(
 	statusCode, responseBody, err := c.doJSON(ctx, http.MethodPost, path, body, token)
 	unauthorized := err == nil && liandongUnauthorizedResponse(statusCode, responseBody)
 	authenticatedRequestFailed := false
-	if path == liandongOrderListPath || path == liandongGoodsListPath {
+	if path == liandongOrderListPath ||
+		path == liandongGoodsListPath ||
+		path == liandongPaymentChannelPath {
 		authenticatedRequestFailed = err != nil || statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices
 		if !authenticatedRequestFailed {
-			if path == liandongOrderListPath {
+			switch path {
+			case liandongOrderListPath:
 				_, err = parseLiandongOrderRecords(responseBody)
-			} else {
+			case liandongGoodsListPath:
 				_, err = parseLiandongGoods(responseBody)
+			case liandongPaymentChannelPath:
+				_, err = parseLiandongEnabledPaymentChannelIDs(responseBody)
 			}
 			authenticatedRequestFailed = err != nil
 		}
@@ -1242,6 +1400,12 @@ func (c *liandongClient) doAuthenticatedJSON(
 			return retryStatus, retryBody, refreshed, &liandongQueryError{systemic: true, err: err}
 		}
 		c.paymentStatusFailureState().reset()
+	}
+	if path == liandongPaymentChannelPath &&
+		retryStatus >= http.StatusOK && retryStatus < http.StatusMultipleChoices {
+		if _, err := parseLiandongEnabledPaymentChannelIDs(retryBody); err != nil {
+			return retryStatus, retryBody, refreshed, &liandongQueryError{systemic: true, err: err}
+		}
 	}
 	return retryStatus, retryBody, refreshed, nil
 }
@@ -1348,6 +1512,7 @@ func (c *liandongClient) doJSONOnce(
 		return 0, nil, c.configErr
 	}
 	if path != liandongCreatePath &&
+		path != liandongPaymentChannelPath &&
 		path != liandongOrderListPath &&
 		path != liandongGoodsListPath &&
 		path != liandongLoginPath {
@@ -1363,7 +1528,9 @@ func (c *liandongClient) doJSONOnce(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	if path == liandongOrderListPath || path == liandongGoodsListPath {
+	if path == liandongOrderListPath ||
+		path == liandongGoodsListPath ||
+		path == liandongPaymentChannelPath {
 		if merchantToken == "" {
 			return 0, nil, errors.New("merchant token is missing")
 		}
@@ -1612,6 +1779,52 @@ func parseLiandongCreateTradeNoForBaseURL(
 		return "", errors.New("provider trade number is invalid")
 	}
 	return tradeNo, nil
+}
+
+func parseLiandongEnabledPaymentChannelIDs(body []byte) ([]int, error) {
+	var payload liandongPaymentChannelResponse
+	body = normalizeLiandongJSONBody(body)
+	if err := common.Unmarshal(body, &payload); err != nil {
+		return nil, invalidLiandongJSONResponse("payment channel", body)
+	}
+	if liandongRawCodeEquals(payload.Code, 0) {
+		message := strings.TrimSpace(payload.Message)
+		if message == "" {
+			message = strings.TrimSpace(payload.MessageV2)
+		}
+		return nil, &liandongProviderRejection{message: message}
+	}
+
+	channels := payload.Channel
+	if channels == nil && len(payload.Data) > 0 && string(payload.Data) != "null" {
+		var data liandongPaymentChannelData
+		if err := common.Unmarshal(payload.Data, &data); err != nil {
+			return nil, errors.New("provider payment channel response shape is unsupported")
+		}
+		channels = data.Channel
+	}
+
+	channelIDs := make([]int, 0, len(channels))
+	seen := make(map[int]struct{}, len(channels))
+	for _, channel := range channels {
+		status, err := parseLiandongOrderStatus(channel.Status)
+		if err != nil {
+			return nil, errors.New("provider payment channel status is invalid")
+		}
+		if status != 1 {
+			continue
+		}
+		if channel.ID < setting.MinLiandongPaymentChannelID ||
+			channel.ID > setting.MaxLiandongPaymentChannelID {
+			return nil, errors.New("provider payment channel ID is invalid")
+		}
+		if _, exists := seen[channel.ID]; exists {
+			continue
+		}
+		seen[channel.ID] = struct{}{}
+		channelIDs = append(channelIDs, channel.ID)
+	}
+	return channelIDs, nil
 }
 
 func parseLiandongOrderVerification(body []byte, expectedTradeNo string) (*liandongVerification, error) {

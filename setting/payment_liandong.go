@@ -23,6 +23,9 @@ const (
 	DefaultLiandongPaymentTimeoutMinutes     = 30
 	MinLiandongPaymentTimeoutMinutes         = 1
 	MaxLiandongPaymentTimeoutMinutes         = 1440
+	DefaultLiandongPaymentChannelID          = 4
+	MinLiandongPaymentChannelID              = 1
+	MaxLiandongPaymentChannelID              = 2147483647
 	DefaultLiandongProxyTimeoutSeconds       = 30
 	MinLiandongProxyTimeoutSeconds           = 5
 	MaxLiandongProxyTimeoutSeconds           = 300
@@ -47,6 +50,7 @@ type LiandongPaymentSettings struct {
 	ClientPollIntervalSeconds int
 	ReconcileBatchSize        int
 	PaymentTimeoutMinutes     int
+	PaymentChannelID          int
 	PaymentProbeEnabled       bool
 	PaymentProbeAlertEmail    string
 	JUUID                     string

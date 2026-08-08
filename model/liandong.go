@@ -247,6 +247,7 @@ func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error)
 		ClientPollIntervalSeconds: setting.DefaultLiandongClientPollIntervalSeconds,
 		ReconcileBatchSize:        setting.DefaultLiandongReconcileBatchSize,
 		PaymentTimeoutMinutes:     setting.DefaultLiandongPaymentTimeoutMinutes,
+		PaymentChannelID:          setting.DefaultLiandongPaymentChannelID,
 		JUUID:                     setting.DefaultLiandongJUUID,
 		AuthMode:                  setting.LiandongAuthModeManualToken,
 	}
@@ -266,6 +267,7 @@ func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error)
 		"LiandongClientPollIntervalSeconds",
 		"LiandongReconcileBatchSize",
 		"LiandongPaymentTimeoutMinutes",
+		"LiandongPaymentChannelID",
 		"LiandongPaymentProbeEnabled",
 		"LiandongPaymentProbeAlertEmail",
 		"LiandongJUUID",
@@ -338,6 +340,13 @@ func GetLiandongPaymentSettingsFromDB() (setting.LiandongPaymentSettings, error)
 				minutes >= setting.MinLiandongPaymentTimeoutMinutes &&
 				minutes <= setting.MaxLiandongPaymentTimeoutMinutes {
 				settingsSnapshot.PaymentTimeoutMinutes = minutes
+			}
+		case "LiandongPaymentChannelID":
+			channelID, err := strconv.Atoi(option.Value)
+			if err == nil &&
+				channelID >= setting.MinLiandongPaymentChannelID &&
+				channelID <= setting.MaxLiandongPaymentChannelID {
+				settingsSnapshot.PaymentChannelID = channelID
 			}
 		case "LiandongPaymentProbeEnabled":
 			settingsSnapshot.PaymentProbeEnabled = option.Value == "true"

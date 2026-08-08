@@ -140,6 +140,7 @@ const defaultSettings: LiandongSettings = {
   client_poll_interval_seconds: 5,
   reconcile_batch_size: 50,
   payment_timeout_minutes: 30,
+  payment_channel_id: 4,
   payment_probe_enabled: false,
   payment_probe_alert_email: '',
   juuid: '',
@@ -397,6 +398,7 @@ export function LiandongPaymentSection() {
         client_poll_interval_seconds: settings.client_poll_interval_seconds,
         reconcile_batch_size: settings.reconcile_batch_size,
         payment_timeout_minutes: settings.payment_timeout_minutes,
+        payment_channel_id: settings.payment_channel_id,
         payment_probe_enabled: settings.payment_probe_enabled,
         payment_probe_alert_email: settings.payment_probe_alert_email.trim(),
         juuid: settings.juuid,
@@ -848,7 +850,7 @@ export function LiandongPaymentSection() {
           </Button>
         </div>
 
-        <SettingsFormGrid className='gap-y-2'>
+        <SettingsFormGrid className='gap-y-2 lg:[&>[data-settings-form-span=full]]:col-span-1'>
           <SettingsSwitchField
             checked={settings.enabled}
             onCheckedChange={(enabled) =>
@@ -935,8 +937,8 @@ export function LiandongPaymentSection() {
           />
         </SettingsFormGrid>
 
-        <div className='grid gap-4 sm:grid-cols-2'>
-          <div className='grid gap-1.5 sm:col-span-2'>
+        <div className='grid gap-4 md:grid-cols-2 lg:grid-cols-3'>
+          <div className='grid gap-1.5'>
             <Label htmlFor='liandong-base-url'>{t('Provider Base URL')}</Label>
             <Input
               id='liandong-base-url'
@@ -960,7 +962,7 @@ export function LiandongPaymentSection() {
 
           {settings.proxy_enabled && (
             <>
-              <div className='grid gap-1.5 sm:col-span-2'>
+              <div className='grid gap-1.5'>
                 <Label htmlFor='liandong-proxy-url'>
                   {t('Card marketplace proxy URL')}
                 </Label>
@@ -1029,6 +1031,30 @@ export function LiandongPaymentSection() {
             </p>
           </div>
           <div className='grid gap-1.5'>
+            <Label htmlFor='liandong-payment-channel-id'>
+              {t('Payment channel ID')}
+            </Label>
+            <Input
+              id='liandong-payment-channel-id'
+              type='number'
+              min={1}
+              max={2147483647}
+              step={1}
+              value={settings.payment_channel_id}
+              onChange={(event) =>
+                setSettings((current) => ({
+                  ...current,
+                  payment_channel_id: event.target.valueAsNumber || 1,
+                }))
+              }
+            />
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Public channel_id sent when creating card marketplace payment orders. It is updated automatically after a new working channel is detected.'
+              )}
+            </p>
+          </div>
+          <div className='grid gap-1.5'>
             <Label>{t('Authentication mode')}</Label>
             <Select
               items={[
@@ -1068,7 +1094,7 @@ export function LiandongPaymentSection() {
           </div>
 
           {settings.auth_mode === 'manual_token' ? (
-            <div className='grid gap-1.5 sm:col-span-2'>
+            <div className='grid gap-1.5'>
               <Label htmlFor='liandong-token'>{t('Merchant token')}</Label>
               <Input
                 id='liandong-token'
@@ -1162,7 +1188,7 @@ export function LiandongPaymentSection() {
                   </Label>
                 </div>
               </div>
-              <p className='text-muted-foreground text-xs sm:col-span-2'>
+              <p className='text-muted-foreground text-xs md:col-span-2 lg:col-span-3'>
                 {t(
                   'The account is shown directly. The stored password is masked by default and can be revealed with the visibility button. Refreshed merchant tokens remain backend-only.'
                 )}
@@ -1192,7 +1218,7 @@ export function LiandongPaymentSection() {
               )}
             </p>
           </div>
-          <div className='grid gap-1.5 sm:col-span-2'>
+          <div className='grid gap-1.5'>
             <Label htmlFor='liandong-payment-probe-email'>
               {t('Payment monitoring alert email')}
             </Label>

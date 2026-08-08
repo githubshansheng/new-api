@@ -167,6 +167,7 @@ func TestLiandongProviderBusinessRejectionIsDefinitive(t *testing.T) {
 		"missing-goods-key",
 		"123456789012",
 		"merchant-id",
+		setting.DefaultLiandongPaymentChannelID,
 	)
 
 	require.Error(t, err)
@@ -350,6 +351,76 @@ func TestLiandongCreateOrderLogsInWhenCredentialCookieJarIsEmpty(t *testing.T) {
 	assert.Equal(t, "TRADE123", tradeNo)
 	assert.EqualValues(t, 1, loginRequests.Load())
 	assert.EqualValues(t, 1, createRequests.Load())
+}
+
+func TestLiandongCreateOrderDiscoversAndRetriesEnabledPaymentChannels(t *testing.T) {
+	resetLiandongServiceFixtures(t)
+	var channelRequests atomic.Int32
+	requestedChannelIDs := make(chan int, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case liandongCreatePath:
+			var payload struct {
+				ChannelID int `json:"channel_id"`
+			}
+			require.NoError(t, common.DecodeJson(r.Body, &payload))
+			requestedChannelIDs <- payload.ChannelID
+			if payload.ChannelID == 5 {
+				_, _ = w.Write([]byte(`{"code":1,"data":{"trade_no":"TRADE-DYNAMIC-CHANNEL"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0,"msg":"该商户未启用此支付渠道","data":null}`))
+		case liandongPaymentChannelPath:
+			channelRequests.Add(1)
+			assert.Equal(t, "secret-token", r.Header.Get("merchant-token"))
+			var payload struct {
+				Code string `json:"code"`
+			}
+			require.NoError(t, common.DecodeJson(r.Body, &payload))
+			assert.Equal(t, "Platform", payload.Code)
+			_, _ = w.Write([]byte(`{"code":1,"data":{"channel":[{"id":2,"status":0},{"id":4,"status":1},{"id":5,"status":"1"}]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &liandongClient{httpClient: server.Client(), baseURL: server.URL}
+	tradeNo, err := client.createOrderWithSettings(
+		context.Background(),
+		"goods-key",
+		"123456789012",
+		"merchant-id",
+		setting.LiandongPaymentSettings{
+			AuthMode:         setting.LiandongAuthModeManualToken,
+			MerchantToken:    "secret-token",
+			PaymentChannelID: 3,
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "TRADE-DYNAMIC-CHANNEL", tradeNo)
+	assert.EqualValues(t, 1, channelRequests.Load())
+	assert.Equal(t, []int{3, 4, 5}, []int{
+		<-requestedChannelIDs,
+		<-requestedChannelIDs,
+		<-requestedChannelIDs,
+	})
+	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
+	require.NoError(t, err)
+	assert.Equal(t, 5, settingsSnapshot.PaymentChannelID)
+	secondTradeNo, err := client.createOrderWithSettings(
+		context.Background(),
+		"goods-key",
+		"123456789012",
+		"merchant-id",
+		settingsSnapshot,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "TRADE-DYNAMIC-CHANNEL", secondTradeNo)
+	assert.EqualValues(t, 1, channelRequests.Load())
+	assert.Equal(t, 5, <-requestedChannelIDs)
 }
 
 func TestCreateLiandongPaymentFallsBackToProviderProductPageWhenWAFBlocksCreation(t *testing.T) {
@@ -717,7 +788,7 @@ func TestLiandongUpstreamMonitorRecordsSanitizedProtocolFailure(t *testing.T) {
 	assert.NotContains(t, record.ResponseBody, "secret-token")
 }
 
-func TestLiandongMerchantTokenOnlySentToOrderList(t *testing.T) {
+func TestLiandongMerchantTokenNotSentToOrderCreation(t *testing.T) {
 	type capturedRequest struct {
 		path  string
 		token string
@@ -744,7 +815,13 @@ func TestLiandongMerchantTokenOnlySentToOrderList(t *testing.T) {
 		httpClient: server.Client(),
 		baseURL:    server.URL,
 	}
-	tradeNo, err := client.createOrder(context.Background(), "goods-key", "123456789012", "merchant-id")
+	tradeNo, err := client.createOrder(
+		context.Background(),
+		"goods-key",
+		"123456789012",
+		"merchant-id",
+		setting.DefaultLiandongPaymentChannelID,
+	)
 	require.NoError(t, err)
 	require.Equal(t, "TRADE123", tradeNo)
 

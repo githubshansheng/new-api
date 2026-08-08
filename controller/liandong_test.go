@@ -239,6 +239,7 @@ func TestGetLiandongSettingsNeverReturnsMerchantToken(t *testing.T) {
 		"LiandongProxyUsername":       "secret-proxy-user",
 		"LiandongProxyPassword":       "secret-proxy-password",
 		"LiandongProxyTimeoutSeconds": "75",
+		"LiandongPaymentChannelID":    "6",
 	}))
 
 	recorder := httptest.NewRecorder()
@@ -254,6 +255,7 @@ func TestGetLiandongSettingsNeverReturnsMerchantToken(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"merchant_token_configured":true`)
 	assert.Contains(t, recorder.Body.String(), `"base_url":"https://gateway.example.com/card"`)
 	assert.Contains(t, recorder.Body.String(), `"proxy_enabled":true`)
+	assert.Contains(t, recorder.Body.String(), `"payment_channel_id":6`)
 	assert.Contains(
 		t,
 		recorder.Body.String(),
@@ -516,7 +518,7 @@ func TestUpdateLiandongSettingsStoresIndependentPollingIntervals(t *testing.T) {
 	context.Request = httptest.NewRequest(
 		http.MethodPut,
 		"/api/option/liandong",
-		strings.NewReader(`{"poll_interval_seconds":1,"client_poll_interval_seconds":7}`),
+		strings.NewReader(`{"poll_interval_seconds":1,"client_poll_interval_seconds":7,"payment_channel_id":5}`),
 	)
 	context.Request.Header.Set("Content-Type", "application/json")
 
@@ -527,6 +529,7 @@ func TestUpdateLiandongSettingsStoresIndependentPollingIntervals(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, settingsSnapshot.PollIntervalSeconds)
 	assert.Equal(t, 7, settingsSnapshot.ClientPollIntervalSeconds)
+	assert.Equal(t, 5, settingsSnapshot.PaymentChannelID)
 	assert.NotContains(t, recorder.Body.String(), "merchant_token")
 }
 

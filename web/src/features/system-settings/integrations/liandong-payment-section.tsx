@@ -1667,7 +1667,6 @@ export function LiandongPaymentSection() {
                   order.fulfillment_status !== 'fulfilled'
                 const canManualFulfill =
                   order.late_payment &&
-                  order.payment_status === 'review_required' &&
                   order.fulfillment_status === 'review_required'
                 const canRequeue =
                   (order.payment_status === 'paid' &&

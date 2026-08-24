@@ -30,6 +30,7 @@ import {
   sideDrawerFormClassName,
   sideDrawerHeaderClassName,
 } from '@/components/drawer-layout'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -166,6 +167,8 @@ export function RedemptionsMutateDrawer({
     !isUpdate ||
     (redemptionLoadState === 'ready' && loadedRedemption?.id === redemptionId)
   const isLoadingRedemption = redemptionLoadState === 'loading'
+  const reclaimLocksQuota =
+    isUpdate && (loadedRedemption?.reclaim_status ?? 0) !== 0
 
   const onSubmit = async (data: RedemptionFormValues) => {
     if (isUpdate && (!currentRow || !loadedRedemption || !isUpdateReady)) {
@@ -308,6 +311,16 @@ export function RedemptionsMutateDrawer({
                     )}
                   />
 
+                  {reclaimLocksQuota && (
+                    <Alert>
+                      <AlertDescription>
+                        {t(
+                          'Quota and expiration cannot be changed after limited quota reclaim is enabled.'
+                        )}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
                   <FormField
                     control={form.control}
                     name='quota_dollars'
@@ -318,6 +331,7 @@ export function RedemptionsMutateDrawer({
                           <Input
                             {...field}
                             type='number'
+                            disabled={reclaimLocksQuota}
                             step={quotaStep}
                             placeholder={quotaPlaceholder}
                             onChange={(e) =>
@@ -345,7 +359,10 @@ export function RedemptionsMutateDrawer({
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>{t('Expiration Time')}</FormLabel>
-                        <div className='flex flex-col gap-2'>
+                        <fieldset
+                          disabled={reclaimLocksQuota}
+                          className='flex flex-col gap-2'
+                        >
                           <FormControl>
                             <DateTimePicker
                               value={field.value ?? undefined}
@@ -387,7 +404,7 @@ export function RedemptionsMutateDrawer({
                               {t('1 Day')}
                             </Button>
                           </div>
-                        </div>
+                        </fieldset>
                         <FormDescription>
                           {t('Leave empty for never expires')}
                         </FormDescription>

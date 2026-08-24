@@ -19,7 +19,12 @@ For commercial licensing, please contact support@quantumnous.com
 // ============================================================================
 // Utility Functions
 // ============================================================================
-export { isRedemptionExpired, isTimestampExpired } from './utils'
+export {
+  isRedemptionExpired,
+  isTimestampExpired,
+  parseReclaimKeys,
+  type ParsedReclaimKeys,
+} from './utils'
 
 // ============================================================================
 // Form Utilities

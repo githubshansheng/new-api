@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { ShieldKeyIcon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 import { Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
@@ -67,6 +69,14 @@ export function RedemptionsPrimaryButtons() {
         >
           <Trash2 className='text-destructive h-4 w-4' />
           {t('Delete Invalid')}
+        </Button>
+        <Button size='sm' variant='outline' onClick={() => setOpen('reclaim')}>
+          <HugeiconsIcon
+            icon={ShieldKeyIcon}
+            strokeWidth={2}
+            data-icon='inline-start'
+          />
+          {t('Enable Limited Quota Reclaim')}
         </Button>
         <Button size='sm' onClick={() => setOpen('create')}>
           <Plus className='h-4 w-4' />

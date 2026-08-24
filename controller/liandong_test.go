@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,6 +33,97 @@ func setupLiandongControllerTestDB(t *testing.T) {
 		&model.LiandongUserOperationLease{},
 		&model.SystemTask{},
 	))
+}
+
+func TestGetLiandongSubscriptionSpecIncludesUpgradeGroupRatio(t *testing.T) {
+	setupLiandongControllerTestDB(t)
+	originalRatios := ratio_setting.GroupRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":0.25}`))
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
+	})
+
+	plan := &model.SubscriptionPlan{
+		Title:            "VIP monthly plan",
+		DurationUnit:     "month",
+		DurationValue:    1,
+		TotalAmount:      100_000_000,
+		QuotaResetPeriod: model.SubscriptionResetNever,
+		UpgradeGroup:     "vip",
+	}
+	require.NoError(t, model.DB.Create(plan).Error)
+	model.InvalidateSubscriptionPlanCache(plan.Id)
+	t.Cleanup(func() { model.InvalidateSubscriptionPlanCache(plan.Id) })
+
+	spec := getLiandongSubscriptionSpec(plan.Id, "default")
+	require.NotNil(t, spec)
+	assert.Equal(t, 0.25, spec.GroupRatio)
+}
+
+func TestGetLiandongSubscriptionSpecUsesCurrentGroupRatioWithoutUpgrade(t *testing.T) {
+	setupLiandongControllerTestDB(t)
+	originalRatios := ratio_setting.GroupRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":0.25,"vip":0.5}`))
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
+	})
+
+	plan := &model.SubscriptionPlan{
+		Title:            "Monthly plan",
+		DurationUnit:     "month",
+		DurationValue:    1,
+		TotalAmount:      100_000_000,
+		QuotaResetPeriod: model.SubscriptionResetNever,
+	}
+	require.NoError(t, model.DB.Create(plan).Error)
+	model.InvalidateSubscriptionPlanCache(plan.Id)
+	t.Cleanup(func() { model.InvalidateSubscriptionPlanCache(plan.Id) })
+
+	spec := getLiandongSubscriptionSpec(plan.Id, "default")
+	require.NotNil(t, spec)
+	assert.Equal(t, 0.25, spec.GroupRatio)
+}
+
+func TestListLiandongProductsIncludesCurrentUserGroupRatio(t *testing.T) {
+	setupLiandongControllerTestDB(t)
+	confirmPaymentComplianceForTest(t)
+	originalRatios := ratio_setting.GroupRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":0.25}`))
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
+	})
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongEnabled":       "true",
+		"LiandongCreateEnabled": "true",
+	}))
+	require.NoError(t, model.DB.Create(&model.LiandongProduct{
+		BusinessType:        model.LiandongBusinessTypeQuota,
+		GoodsType:           "rights",
+		Name:                "Quota package",
+		QuotaAmount:         100_000_000,
+		ExpectedAmountMinor: 20_000,
+		Currency:            "CNY",
+		Enabled:             true,
+	}).Error)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/payment/liandong/products", nil)
+	context.Set("group", "default")
+
+	ListLiandongProducts(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Success bool `json:"success"`
+		Data    []struct {
+			GroupRatio float64 `json:"group_ratio"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Success)
+	require.Len(t, response.Data, 1)
+	assert.Equal(t, 0.25, response.Data[0].GroupRatio)
 }
 
 func TestRootGetLiandongMonitorTasksPaginatesHistory(t *testing.T) {

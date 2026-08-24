@@ -14,6 +14,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const redemptionReclaimRequestBodyLimitBytes int64 = 128 << 10
+
 func SetApiRouter(router *gin.Engine) {
 	apiRouter := router.Group("/api")
 	apiRouter.Use(middleware.RouteTag("api"))
@@ -98,6 +100,7 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/sessions/revoke-others", middleware.DisableCache(), controller.RevokeOtherLoginSessions)
 				selfRoute.GET("/self/groups", controller.GetUserGroups)
 				selfRoute.GET("/self", controller.GetSelf)
+				selfRoute.GET("/limited_quota", controller.GetLimitedQuotaSummary)
 				selfRoute.GET("/models", controller.GetUserModels)
 				selfRoute.PUT("/self", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.UpdateSelf)
 				selfRoute.DELETE("/self", middleware.DisableCache(), controller.DeleteSelf)
@@ -339,6 +342,19 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			redemptionRoute.GET("/", controller.GetAllRedemptions)
 			redemptionRoute.GET("/search", controller.SearchRedemptions)
+			redemptionRoute.POST(
+				"/reclaim/preview",
+				middleware.UserCriticalRateLimit("redemption-reclaim"),
+				middleware.RequestBodyLimit(redemptionReclaimRequestBodyLimitBytes),
+				controller.PreviewRedemptionReclaim,
+			)
+			redemptionRoute.POST(
+				"/reclaim/enable",
+				middleware.UserCriticalRateLimit("redemption-reclaim"),
+				middleware.RequestBodyLimit(redemptionReclaimRequestBodyLimitBytes),
+				controller.EnableRedemptionReclaim,
+			)
+			redemptionRoute.GET("/reclaim/stats", controller.GetRedemptionReclaimStats)
 			redemptionRoute.GET("/:id", controller.GetRedemption)
 			redemptionRoute.POST("/", controller.AddRedemption)
 			redemptionRoute.POST("/batch", controller.DeleteRedemptionBatch)

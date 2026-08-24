@@ -56,6 +56,7 @@ func TestMain(m *testing.M) {
 		&model.Log{},
 		&model.Channel{},
 		&model.Midjourney{},
+		&model.Redemption{},
 		&model.Option{},
 		&model.TopUp{},
 		&model.SubscriptionPlan{},
@@ -88,6 +89,7 @@ func truncate(t *testing.T) {
 		model.DB.Exec("DELETE FROM logs")
 		model.DB.Exec("DELETE FROM channels")
 		model.DB.Exec("DELETE FROM midjourneys")
+		model.DB.Exec("DELETE FROM redemptions")
 		model.DB.Exec("DELETE FROM options")
 		model.DB.Exec("DELETE FROM top_ups")
 		model.DB.Exec("DELETE FROM subscription_orders")
@@ -599,6 +601,16 @@ func getLastLog(t *testing.T) *model.Log {
 	return &log
 }
 
+func assertLogBillingSource(t *testing.T, log *model.Log, expected string) {
+	t.Helper()
+	require.NotNil(t, log)
+	other := struct {
+		BillingSource string `json:"billing_source"`
+	}{}
+	require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
+	assert.Equal(t, expected, other.BillingSource)
+}
+
 func countLogs(t *testing.T) int64 {
 	t.Helper()
 	var count int64
@@ -722,6 +734,7 @@ func TestMidjourneyRefundRestoresEveryAccountingElementOnBillingChannel(t *testi
 	assert.Equal(t, chargedQuota, log.Quota)
 	assert.Equal(t, tokenID, log.TokenId)
 	assert.Equal(t, billingChannelID, log.ChannelId)
+	assertLogBillingSource(t, log, BillingSourceWallet)
 
 	assert.True(t, RefundMidjourneyQuota(ctx, task, "duplicate poll"))
 	assert.Equal(t, int64(1), countLogs(t))
@@ -930,6 +943,7 @@ func TestRefundTaskQuota_Wallet(t *testing.T) {
 	assert.Equal(t, model.LogTypeRefund, log.Type)
 	assert.Equal(t, preConsumed, log.Quota)
 	assert.Equal(t, "test-model", log.ModelName)
+	assertLogBillingSource(t, log, BillingSourceWallet)
 	assert.Zero(t, task.Quota)
 	assert.Zero(t, getTaskQuota(t, task.ID))
 }
@@ -968,6 +982,7 @@ func TestRefundTaskQuota_Subscription(t *testing.T) {
 	log := getLastLog(t)
 	require.NotNil(t, log)
 	assert.Equal(t, model.LogTypeRefund, log.Type)
+	assertLogBillingSource(t, log, BillingSourceSubscription)
 	assert.Zero(t, getTaskQuota(t, task.ID))
 }
 
@@ -1083,6 +1098,7 @@ func TestRecalculate_PositiveDelta(t *testing.T) {
 	require.NotNil(t, log)
 	assert.Equal(t, model.LogTypeConsume, log.Type)
 	assert.Equal(t, actualQuota-preConsumed, log.Quota)
+	assertLogBillingSource(t, log, BillingSourceWallet)
 }
 
 func TestRecalculate_NegativeDelta(t *testing.T) {
@@ -1122,6 +1138,7 @@ func TestRecalculate_NegativeDelta(t *testing.T) {
 	require.NotNil(t, log)
 	assert.Equal(t, model.LogTypeRefund, log.Type)
 	assert.Equal(t, preConsumed-actualQuota, log.Quota)
+	assertLogBillingSource(t, log, BillingSourceWallet)
 }
 
 func TestRecalculate_ZeroDelta(t *testing.T) {
@@ -1218,6 +1235,7 @@ func TestRecalculate_Subscription_NegativeDelta(t *testing.T) {
 	log := getLastLog(t)
 	require.NotNil(t, log)
 	assert.Equal(t, model.LogTypeRefund, log.Type)
+	assertLogBillingSource(t, log, BillingSourceSubscription)
 }
 
 // ===========================================================================

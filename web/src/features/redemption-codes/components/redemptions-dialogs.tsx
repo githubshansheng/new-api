@@ -16,12 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { LimitedQuotaReclaimDialog } from './limited-quota-reclaim-dialog'
+import { ReclaimDetailsSheet } from './reclaim-details-sheet'
 import { RedemptionsDeleteDialog } from './redemptions-delete-dialog'
 import { RedemptionsMutateDrawer } from './redemptions-mutate-drawer'
 import { useRedemptions } from './redemptions-provider'
 
 export function RedemptionsDialogs() {
-  const { open, setOpen, currentRow } = useRedemptions()
+  const { open, setOpen, currentRow, triggerRefresh } = useRedemptions()
   const isUpdate = open === 'update'
 
   return (
@@ -32,6 +34,16 @@ export function RedemptionsDialogs() {
         currentRow={isUpdate ? currentRow || undefined : undefined}
       />
       <RedemptionsDeleteDialog />
+      <LimitedQuotaReclaimDialog
+        open={open === 'reclaim'}
+        onOpenChange={(isOpen) => !isOpen && setOpen(null)}
+        onEnabled={triggerRefresh}
+      />
+      <ReclaimDetailsSheet
+        open={open === 'view'}
+        onOpenChange={(isOpen) => !isOpen && setOpen(null)}
+        redemption={currentRow}
+      />
     </>
   )
 }

@@ -621,6 +621,9 @@ func executeTaskSubmissionWith(
 	task.PrivateData.SubscriptionId = relayInfo.SubscriptionId
 	task.PrivateData.TokenId = relayInfo.TokenId
 	task.PrivateData.NodeName = common.NodeName
+	if billingSession, ok := relayInfo.Billing.(*service.BillingSession); ok {
+		task.PrivateData.WalletQuotaAllocation = billingSession.GetWalletQuotaAllocation()
+	}
 	task.PrivateData.BillingContext = &model.TaskBillingContext{
 		ModelPrice:      relayInfo.PriceData.ModelPrice,
 		GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
@@ -690,10 +693,28 @@ func executeTaskSubmissionWith(
 	diagnostics.durable(task)
 	diagnostics.settleStart(task, result.Quota)
 
-	if settleErr := service.SettleBilling(c, relayInfo, result.Quota); settleErr != nil {
+	settleErr := service.SettleBilling(c, relayInfo, result.Quota)
+	var allocationPersistErr error
+	if billingSession, ok := relayInfo.Billing.(*service.BillingSession); ok &&
+		relayInfo.BillingSource == service.BillingSourceWallet {
+		// Settlement can shrink the timed-quota attribution created during
+		// reserve. Persist the final snapshot so later task refunds cannot
+		// restore an allocation that settlement already consumed.
+		task.PrivateData.WalletQuotaAllocation = billingSession.GetWalletQuotaAllocation()
+		allocationPersistErr = task.UpdateQuotaAndPrivateData()
+		if allocationPersistErr != nil {
+			common.SysError("persist settled task wallet allocation error: " + allocationPersistErr.Error())
+		}
+	}
+	if settleErr != nil {
 		common.SysError("settle task billing error: " + settleErr.Error())
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to settle task billing"), "task_billing_settlement_failed", http.StatusInternalServerError)
 		diagnostics.failed("settle", "billing_error", taskErr, true)
+		return nil, taskErr
+	}
+	if allocationPersistErr != nil {
+		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to persist settled task billing state"), "task_billing_state_persist_failed", http.StatusInternalServerError)
+		diagnostics.failed("settle", "database_error", taskErr, true)
 		return nil, taskErr
 	}
 	if task.Status != model.TaskStatusFailure {

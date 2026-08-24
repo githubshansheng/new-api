@@ -16,15 +16,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQuery } from '@tanstack/react-query'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { SectionPageLayout } from '@/components/layout'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
 
-import { getLiandongProducts } from './api'
+import { getLimitedQuota, getLiandongProducts, isApiSuccess } from './api'
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
 import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
@@ -89,10 +91,28 @@ export function Wallet(props: WalletProps) {
     useState<LiandongProduct | null>(null)
   const [liandongDialogOpen, setLiandongDialogOpen] = useState(false)
   const [liandongAttemptId, setLiandongAttemptId] = useState(0)
+  const [subscriptionRefreshKey, setSubscriptionRefreshKey] = useState(0)
+  const [highlightedExpiredTime, setHighlightedExpiredTime] = useState<
+    number | null
+  >(null)
+  const refreshedDeadlineRef = useRef<number | null>(null)
 
   const { status } = useStatus()
   const { currency } = useSystemConfig()
   const { topupInfo, presetAmounts, loading: topupLoading } = useTopupInfo()
+  const limitedQuotaQuery = useQuery({
+    queryKey: ['user', 'limited-quota'],
+    queryFn: async () => {
+      const response = await getLimitedQuota()
+      if (!isApiSuccess(response) || !response.data) {
+        throw new Error(response.message || 'Failed to load limited quota')
+      }
+      return response.data
+    },
+    retry: 1,
+    refetchOnWindowFocus: true,
+  })
+  const refetchLimitedQuota = limitedQuotaQuery.refetch
 
   // Calculate effective exchange rate - when display type is USD, use rate of 1
   const effectiveUsdExchangeRate = useMemo(() => {
@@ -136,8 +156,49 @@ export function Wallet(props: WalletProps) {
   }, [])
 
   useEffect(() => {
-    fetchUser()
-  }, [fetchUser])
+    if (limitedQuotaQuery.isFetching) return
+    void fetchUser()
+  }, [
+    fetchUser,
+    limitedQuotaQuery.dataUpdatedAt,
+    limitedQuotaQuery.errorUpdatedAt,
+    limitedQuotaQuery.isFetching,
+  ])
+
+  const nearestLimitedQuotaDeadline = useMemo(() => {
+    const deadlines = (limitedQuotaQuery.data?.groups ?? [])
+      .map((group) => group.expired_time)
+      .filter((deadline) => deadline > 0)
+    return deadlines.length > 0 ? Math.min(...deadlines) : null
+  }, [limitedQuotaQuery.data?.groups])
+
+  useEffect(() => {
+    if (
+      nearestLimitedQuotaDeadline === null ||
+      refreshedDeadlineRef.current === nearestLimitedQuotaDeadline
+    ) {
+      return
+    }
+
+    let timer = 0
+    const scheduleDeadlineRefresh = () => {
+      const remaining = nearestLimitedQuotaDeadline * 1000 - Date.now() + 1_100
+      if (remaining > 2_147_483_647) {
+        timer = window.setTimeout(scheduleDeadlineRefresh, 2_147_483_647)
+        return
+      }
+      timer = window.setTimeout(
+        () => {
+          refreshedDeadlineRef.current = nearestLimitedQuotaDeadline
+          void refetchLimitedQuota()
+        },
+        Math.max(0, remaining)
+      )
+    }
+    scheduleDeadlineRefresh()
+
+    return () => window.clearTimeout(timer)
+  }, [nearestLimitedQuotaDeadline, refetchLimitedQuota])
 
   useEffect(() => {
     let cancelled = false
@@ -243,12 +304,34 @@ export function Wallet(props: WalletProps) {
   const handleRedeem = async () => {
     if (!redemptionCode) return
 
-    const success = await redeemCode(redemptionCode)
-    if (success) {
+    setHighlightedExpiredTime(null)
+    const previousGroups = new Map(
+      (limitedQuotaQuery.data?.groups ?? []).map((group) => [
+        group.expired_time,
+        group.remaining_quota,
+      ])
+    )
+    const quotaAdded = await redeemCode(redemptionCode)
+    if (quotaAdded !== null) {
       setRedemptionCode('')
-      await fetchUser()
+      const [limitedResult] = await Promise.all([
+        refetchLimitedQuota(),
+        fetchUser(),
+      ])
+      const changedGroup = limitedResult.data?.groups.find(
+        (group) =>
+          group.remaining_quota > (previousGroups.get(group.expired_time) ?? 0)
+      )
+      if (changedGroup) {
+        setHighlightedExpiredTime(changedGroup.expired_time)
+        toast.success(t('Limited quota details updated'))
+      }
     }
   }
+
+  const refreshWalletSummaries = useCallback(async () => {
+    await Promise.all([fetchUser(), refetchLimitedQuota()])
+  }, [fetchUser, refetchLimitedQuota])
 
   // Handle transfer
   const handleTransfer = async (amount: number) => {
@@ -322,7 +405,15 @@ export function Wallet(props: WalletProps) {
         <SectionPageLayout.Title>{t('Wallet')}</SectionPageLayout.Title>
         <SectionPageLayout.Content>
           <div className='mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-5'>
-            <WalletStatsCard user={user} loading={userLoading} />
+            <WalletStatsCard
+              user={user}
+              loading={userLoading}
+              limitedQuota={limitedQuotaQuery.data}
+              limitedLoading={limitedQuotaQuery.isLoading}
+              limitedError={limitedQuotaQuery.isError}
+              onRetryLimited={() => void refreshWalletSummaries()}
+              highlightedExpiredTime={highlightedExpiredTime}
+            />
 
             <div
               className={
@@ -362,9 +453,7 @@ export function Wallet(props: WalletProps) {
                   enableWaffoPancakeTopup={
                     topupInfo?.enable_waffo_pancake_topup
                   }
-                  liandongProducts={liandongProducts.filter(
-                    (product) => product.business_type === 'quota'
-                  )}
+                  liandongProducts={liandongProducts}
                   onLiandongProductSelect={handleLiandongProductSelect}
                 />
               </div>
@@ -373,10 +462,14 @@ export function Wallet(props: WalletProps) {
                 topupInfo={topupInfo}
                 onAvailabilityChange={handleSubscriptionAvailabilityChange}
                 userQuota={user?.quota}
-                onPurchaseSuccess={fetchUser}
-                liandongProducts={liandongProducts.filter(
-                  (product) => product.business_type === 'subscription'
-                )}
+                limitedQuota={limitedQuotaQuery.data?.total}
+                onPurchaseSuccess={refreshWalletSummaries}
+                onBalanceRefresh={refreshWalletSummaries}
+                refreshKey={subscriptionRefreshKey}
+                liandongEnabled={
+                  topupInfo?.enable_liandong_topup === true ||
+                  liandongProducts.length > 0
+                }
               />
             </div>
 
@@ -432,7 +525,12 @@ export function Wallet(props: WalletProps) {
         onOpenChange={setLiandongDialogOpen}
         product={selectedLiandongProduct}
         attemptId={liandongAttemptId}
-        onPaymentSuccess={fetchUser}
+        onPaymentSuccess={async () => {
+          await refreshWalletSummaries()
+          if (selectedLiandongProduct?.business_type === 'subscription') {
+            setSubscriptionRefreshKey((current) => current + 1)
+          }
+        }}
       />
     </>
   )

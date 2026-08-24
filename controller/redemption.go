@@ -31,8 +31,27 @@ func GetAllRedemptions(c *gin.Context) {
 func SearchRedemptions(c *gin.Context) {
 	keyword := c.Query("keyword")
 	status := c.Query("status")
+	reclaimStatus := c.Query("reclaim_status")
+	expireStart, err := strconv.ParseInt(c.DefaultQuery("expire_start", "0"), 10, 64)
+	if err != nil || expireStart < 0 {
+		common.ApiError(c, errors.New("invalid expire_start"))
+		return
+	}
+	expireEnd, err := strconv.ParseInt(c.DefaultQuery("expire_end", "0"), 10, 64)
+	if err != nil || expireEnd < 0 {
+		common.ApiError(c, errors.New("invalid expire_end"))
+		return
+	}
 	pageInfo := common.GetPageQuery(c)
-	redemptions, total, err := model.SearchRedemptions(keyword, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	redemptions, total, err := model.SearchRedemptionsWithReclaimFilters(
+		keyword,
+		status,
+		reclaimStatus,
+		expireStart,
+		expireEnd,
+		pageInfo.GetStartIdx(),
+		pageInfo.GetPageSize(),
+	)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -156,12 +175,19 @@ func UpdateRedemption(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	cleanRedemption, err := model.GetRedemptionById(redemption.Id)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if statusOnly == "" {
+	var cleanRedemption *model.Redemption
+	if statusOnly != "" {
+		if redemption.Status != common.RedemptionCodeStatusEnabled &&
+			redemption.Status != common.RedemptionCodeStatusDisabled {
+			common.ApiError(c, errors.New("无效的兑换码状态"))
+			return
+		}
+		cleanRedemption, err = model.UpdateRedemptionStatusForAdmin(redemption.Id, redemption.Status)
+	} else {
+		if utf8.RuneCountInString(redemption.Name) == 0 || utf8.RuneCountInString(redemption.Name) > 20 {
+			common.ApiErrorI18n(c, i18n.MsgRedemptionNameLength)
+			return
+		}
 		if redemption.Quota <= 0 {
 			common.ApiError(c, errors.New("redemption quota must be positive"))
 			return
@@ -170,19 +196,26 @@ func UpdateRedemption(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
-		if valid, msg := validateExpiredTime(c, redemption.ExpiredTime); !valid {
-			c.JSON(http.StatusOK, gin.H{"success": false, "message": msg})
+
+		current, getErr := model.GetRedemptionById(redemption.Id)
+		if getErr != nil {
+			common.ApiError(c, getErr)
 			return
 		}
-		// If you add more fields, please also update redemption.Update()
-		cleanRedemption.Name = redemption.Name
-		cleanRedemption.Quota = redemption.Quota
-		cleanRedemption.ExpiredTime = redemption.ExpiredTime
+		if current.ReclaimStatus == model.RedemptionReclaimStatusDisabled ||
+			current.ExpiredTime != redemption.ExpiredTime {
+			if valid, msg := validateExpiredTime(c, redemption.ExpiredTime); !valid {
+				c.JSON(http.StatusOK, gin.H{"success": false, "message": msg})
+				return
+			}
+		}
+		cleanRedemption, err = model.UpdateRedemptionForAdmin(
+			redemption.Id,
+			redemption.Name,
+			redemption.Quota,
+			redemption.ExpiredTime,
+		)
 	}
-	if statusOnly != "" {
-		cleanRedemption.Status = redemption.Status
-	}
-	err = cleanRedemption.Update()
 	if err != nil {
 		common.ApiError(c, err)
 		return

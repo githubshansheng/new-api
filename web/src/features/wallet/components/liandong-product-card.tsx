@@ -24,9 +24,11 @@ import {
   formatResetPeriod,
 } from '@/features/subscriptions/lib/format'
 import type { SubscriptionPlan } from '@/features/subscriptions/types'
+import { useSystemConfig } from '@/hooks/use-system-config'
 import {
   formatLiandongAmount,
-  formatLiandongQuota,
+  formatLiandongEffectiveQuota,
+  formatLiandongGroupRatio,
 } from '@/lib/liandong-payment'
 import { cn } from '@/lib/utils'
 
@@ -71,6 +73,7 @@ type Props = {
 
 export function LiandongProductCard({ product, onSelect }: Props) {
   const { t } = useTranslation()
+  const { currency } = useSystemConfig()
   const hasInventory = product.goods_type === 'card'
   const disabled = hasInventory && product.inventory_level === 'out_of_stock'
   const subscription = product.subscription
@@ -78,7 +81,12 @@ export function LiandongProductCard({ product, onSelect }: Props) {
   let subscriptionDetails = ''
 
   if (product.business_type === 'quota') {
-    specification = formatLiandongQuota(product.quota_amount)
+    specification = formatLiandongEffectiveQuota(
+      product.quota_amount,
+      product.group_ratio,
+      currency.quotaPerUnit,
+      t('Official')
+    )
   } else if (subscription) {
     const subscriptionPlan: Partial<SubscriptionPlan> = {
       title: subscription.title,
@@ -94,9 +102,20 @@ export function LiandongProductCard({ product, onSelect }: Props) {
     }
     specification = `${subscription.title} · ${formatDuration(subscriptionPlan, t)}`
     subscriptionDetails = [
-      formatLiandongQuota(subscription.total_amount),
+      formatLiandongEffectiveQuota(
+        subscription.total_amount,
+        product.group_ratio,
+        currency.quotaPerUnit,
+        t('Official')
+      ),
       formatResetPeriod(subscriptionPlan, t),
-      subscription.upgrade_group || t('No change'),
+      subscription.upgrade_group
+        ? formatLiandongGroupRatio(
+            subscription.upgrade_group,
+            product.group_ratio,
+            t('Multiplier')
+          )
+        : t('No change'),
     ].join(' · ')
   }
 

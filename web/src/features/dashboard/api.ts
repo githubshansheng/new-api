@@ -22,6 +22,7 @@ import type {
   FlowQuotaDataItem,
   QuotaDataItem,
   UptimeGroupResult,
+  LimitedQuotaReclaimStats,
 } from './types'
 
 // ============================================================================
@@ -89,5 +90,16 @@ export async function getUptimeStatus() {
   const res = await api.get<{ success: boolean; data: UptimeGroupResult[] }>(
     '/api/uptime/status'
   )
+  return res.data
+}
+
+export async function getLimitedQuotaReclaimStats(): Promise<{
+  success: boolean
+  message?: string
+  data?: LimitedQuotaReclaimStats
+}> {
+  const res = await api.get('/api/redemption/reclaim/stats', {
+    skipErrorHandler: true,
+  })
   return res.data
 }

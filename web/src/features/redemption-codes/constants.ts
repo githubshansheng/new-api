@@ -70,6 +70,40 @@ export const REDEMPTION_FILTER_VALUES = [
   REDEMPTION_FILTER_EXPIRED,
 ] as const
 
+export const RECLAIM_STATUS = {
+  DISABLED: 0,
+  PENDING: 1,
+  COMPLETED: 2,
+  MANUAL_REVIEW: 3,
+  ERROR: 4,
+} as const
+
+export const RECLAIM_FILTER_VALUES = [
+  '0',
+  '1',
+  '2',
+  '3',
+  '4',
+  'active',
+  'waiting',
+  'due',
+  'attention',
+] as const
+
+export function getReclaimStatusOptions(t: TFunction) {
+  return [
+    { label: t('Reclaim Disabled'), value: '0' },
+    { label: t('Reclaim Pending'), value: '1' },
+    { label: t('Reclaim Completed'), value: '2' },
+    { label: t('Manual Review'), value: '3' },
+    { label: t('Reclaim Error'), value: '4' },
+    { label: t('Reclaim Active'), value: 'active' },
+    { label: t('Waiting for Redemption'), value: 'waiting' },
+    { label: t('Reclaim Due'), value: 'due' },
+    { label: t('Needs Attention'), value: 'attention' },
+  ]
+}
+
 export function getRedemptionStatusOptions(t: TFunction) {
   return [
     ...Object.values(REDEMPTION_STATUSES).map((config) => ({

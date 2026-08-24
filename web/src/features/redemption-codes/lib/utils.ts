@@ -20,6 +20,26 @@ For commercial licensing, please contact support@quantumnous.com
  * Utility functions for redemption codes
  */
 
+export interface ParsedReclaimKeys {
+  keys: string[]
+  recognizedCount: number
+  duplicateCount: number
+}
+
+export function parseReclaimKeys(value: string): ParsedReclaimKeys {
+  const candidates = value
+    .split(/[\r\n,，]+/)
+    .map((key) => key.replaceAll(/\s+/g, ''))
+    .filter(Boolean)
+  const keys = [...new Set(candidates)]
+
+  return {
+    keys,
+    recognizedCount: keys.length,
+    duplicateCount: candidates.length - keys.length,
+  }
+}
+
 /**
  * Check if a Unix timestamp (in seconds) is expired
  * @param timestamp - Unix timestamp in seconds (0 means never expires)

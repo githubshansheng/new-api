@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { ViewIcon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 import type { Row } from '@tanstack/react-table'
 import { Trash2, Edit, Power, PowerOff } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -79,8 +81,10 @@ export function DataTableRowActions<TData>({
     }
   }
 
-  const canEdit = isEnabled && !isExpired
-  const canToggle = !isUsed && !isExpired
+  const reclaimEnabled = (redemption.reclaim_status ?? 0) !== 0
+  const canEdit = (isEnabled && !isExpired) || reclaimEnabled
+  const canToggle = !isUsed && !isExpired && !reclaimEnabled
+  const canDelete = !isUsed && !reclaimEnabled
 
   return (
     <div className='-ml-1.5 flex items-center gap-1'>
@@ -105,6 +109,22 @@ export function DataTableRowActions<TData>({
       </Tooltip>
 
       <DataTableRowActionMenu ariaLabel={t('Open menu')} modal={false}>
+        {reclaimEnabled && (
+          <>
+            <DropdownMenuItem
+              onClick={() => {
+                setCurrentRow(redemption)
+                setOpen('view')
+              }}
+            >
+              {t('View Reclaim Details')}
+              <DropdownMenuShortcut>
+                <HugeiconsIcon icon={ViewIcon} strokeWidth={2} />
+              </DropdownMenuShortcut>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
         {canToggle && (
           <DropdownMenuItem onClick={handleToggleStatus}>
             {isEnabled ? (
@@ -131,6 +151,7 @@ export function DataTableRowActions<TData>({
             setOpen('delete')
           }}
           className='text-destructive focus:text-destructive'
+          disabled={!canDelete}
         >
           {t('Delete')}
           <DropdownMenuShortcut>

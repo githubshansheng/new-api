@@ -38,6 +38,7 @@ func PrepareMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.
 	task.Quota = 0
 	task.TokenId = 0
 	task.BillingChannelId = 0
+	task.WalletQuotaAllocation = model.WalletQuotaAllocation{}
 	if !shouldBill {
 		return false, nil
 	}
@@ -76,6 +77,7 @@ func SettleMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.M
 		task.Quota = 0
 		task.TokenId = 0
 		task.BillingChannelId = 0
+		task.WalletQuotaAllocation = model.WalletQuotaAllocation{}
 		if updateErr := task.UpdateBillingState(); updateErr != nil {
 			return false, errors.Join(billingErr, fmt.Errorf("clear Midjourney billing state: %w", updateErr))
 		}
@@ -83,6 +85,7 @@ func SettleMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.M
 	}
 
 	task.TokenId = 0
+	task.WalletQuotaAllocation = result.WalletQuotaAllocation
 	if result.TokenApplied {
 		task.TokenId = relayInfo.TokenId
 	}
@@ -99,7 +102,7 @@ func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason s
 		return true
 	}
 
-	if err := model.IncreaseUserQuota(task.UserId, quota, false); err != nil {
+	if err := model.RefundUserQuotaWithTimedAllocation(task.UserId, quota, &task.WalletQuotaAllocation); err != nil {
 		logger.LogWarn(ctx, fmt.Sprintf("退还 Midjourney 用户额度失败 task %s: %s", task.MjId, err.Error()))
 		return false
 	}
@@ -119,6 +122,7 @@ func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason s
 	other := model.NewLogOther()
 	other.SetPublic("task_id", task.MjId)
 	other.SetPublic("reason", reason)
+	other.SetPublic("billing_source", BillingSourceWallet)
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
 		UserId:    task.UserId,
 		LogType:   model.LogTypeRefund,

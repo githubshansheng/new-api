@@ -30,10 +30,15 @@ import {
 } from '@/components/ui/tooltip'
 import { formatQuota, formatTimestampToDate } from '@/lib/format'
 
-import { REDEMPTION_FILTER_EXPIRED, REDEMPTION_STATUSES } from '../constants'
+import {
+  RECLAIM_STATUS,
+  REDEMPTION_FILTER_EXPIRED,
+  REDEMPTION_STATUSES,
+} from '../constants'
 import { isRedemptionExpired, isTimestampExpired } from '../lib'
 import type { Redemption } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
+import { ReclaimStatusBadge } from './reclaim-status-badge'
 
 export function useRedemptionsColumns(): ColumnDef<Redemption>[] {
   const { t } = useTranslation()
@@ -211,6 +216,33 @@ export function useRedemptionsColumns(): ColumnDef<Redemption>[] {
       size: 180,
     },
     {
+      accessorKey: 'reclaim_status',
+      header: t('Limited Quota Reclaim'),
+      meta: { mobileHidden: true },
+      cell: ({ row }) => (
+        <div className='flex min-w-40 flex-col items-start gap-1'>
+          <ReclaimStatusBadge redemption={row.original} />
+          {row.original.reclaim_status === RECLAIM_STATUS.PENDING &&
+            row.original.used_user_id > 0 &&
+            row.original.expired_time >= Math.floor(Date.now() / 1000) && (
+              <span className='text-muted-foreground text-xs tabular-nums'>
+                {t('Remaining {{quota}}', {
+                  quota: formatQuota(row.original.reclaim_remaining_quota ?? 0),
+                })}
+              </span>
+            )}
+          {row.original.reclaim_status === RECLAIM_STATUS.COMPLETED && (
+            <span className='text-muted-foreground text-xs tabular-nums'>
+              {t('Reclaimed {{quota}}', {
+                quota: formatQuota(row.original.reclaimed_quota ?? 0),
+              })}
+            </span>
+          )}
+        </div>
+      ),
+      size: 190,
+    },
+    {
       accessorKey: 'used_user_id',
       header: t('Redeemed By'),
       meta: { mobileHidden: true },
@@ -233,7 +265,7 @@ export function useRedemptionsColumns(): ColumnDef<Redemption>[] {
                   className='cursor-help'
                 />
               }
-            ></TooltipTrigger>
+            />
             <TooltipContent>
               <div className='space-y-1 text-xs'>
                 <div>

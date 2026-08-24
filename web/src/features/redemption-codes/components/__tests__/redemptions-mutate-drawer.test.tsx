@@ -200,6 +200,23 @@ describe('redemption drawer', () => {
     expect(getControlByLabel('Quota (CNY)').value).toBe('200')
   })
 
+  test('keeps quota and expiration controls disabled after reclaim is enabled', async () => {
+    const original = { ...redemption(1), reclaim_status: 1 }
+    apiClient.get = async () => ({ data: { success: true, data: original } })
+
+    await renderDrawer(original)
+    await waitForLoadedForm()
+
+    expect(getControlByLabel('Quota (USD)')).toBeDisabled()
+    expect(
+      screen.getByText(
+        'Quota and expiration cannot be changed after limited quota reclaim is enabled.'
+      )
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Never expires' })).toBeDisabled()
+    expect(getControlByLabel('Name')).toBeEnabled()
+  })
+
   test('blocks updates and reports an error when loading rejects', async () => {
     const updates: unknown[] = []
     Reflect.set(console, 'log', () => undefined)

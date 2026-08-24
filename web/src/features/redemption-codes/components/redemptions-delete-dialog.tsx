@@ -40,9 +40,13 @@ export function RedemptionsDeleteDialog() {
   const { t } = useTranslation()
   const { open, setOpen, currentRow, triggerRefresh } = useRedemptions()
   const [isDeleting, setIsDeleting] = useState(false)
+  const deleteBlocked = Boolean(
+    currentRow &&
+    (currentRow.status === 3 || (currentRow.reclaim_status ?? 0) !== 0)
+  )
 
   const handleDelete = async () => {
-    if (!currentRow) return
+    if (!currentRow || deleteBlocked) return
 
     setIsDeleting(true)
     try {
@@ -70,9 +74,17 @@ export function RedemptionsDeleteDialog() {
         <AlertDialogHeader>
           <AlertDialogTitle>{t('Are you sure?')}</AlertDialogTitle>
           <AlertDialogDescription>
-            {t('This will permanently delete redemption code')}{' '}
-            <span className='font-semibold'>{currentRow?.name}</span>
-            {t('. This action cannot be undone.')}
+            {deleteBlocked ? (
+              t(
+                'Redeemed codes and codes with limited quota reclaim enabled cannot be deleted.'
+              )
+            ) : (
+              <>
+                {t('This will permanently delete redemption code')}{' '}
+                <span className='font-semibold'>{currentRow?.name}</span>
+                {t('. This action cannot be undone.')}
+              </>
+            )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -81,7 +93,7 @@ export function RedemptionsDeleteDialog() {
           </AlertDialogCancel>
           <AlertDialogAction
             onClick={handleDelete}
-            disabled={isDeleting}
+            disabled={isDeleting || deleteBlocked}
             variant='destructive'
           >
             {isDeleting ? t('Deleting...') : t('Delete')}

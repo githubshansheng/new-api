@@ -272,3 +272,36 @@ export interface FAQItem {
   question: string
   answer: string
 }
+
+export interface LimitedQuotaReclaimTrendItem {
+  date: string
+  start_time: number
+  end_time: number
+  quota: number
+  code_count: number
+  user_count: number
+}
+
+export interface LimitedQuotaReclaimAttentionItem {
+  expired_time: number
+  quota: number
+  code_count: number
+  user_count: number
+  status: number | string
+}
+
+export interface LimitedQuotaReclaimStats {
+  active_quota: number
+  active_users: number
+  expiring_24h_quota: number
+  expiring_24h_codes: number
+  reclaimed_today_quota: number
+  reclaimed_today_users: number
+  overdue_count: number
+  manual_review_count: number
+  error_count: number
+  trend: LimitedQuotaReclaimTrendItem[]
+  attention: LimitedQuotaReclaimAttentionItem[]
+  today_start: number
+  updated_at: number
+}

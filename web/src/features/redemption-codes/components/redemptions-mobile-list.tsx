@@ -38,6 +38,7 @@ import { REDEMPTION_STATUS, REDEMPTION_STATUSES } from '../constants'
 import { isRedemptionExpired } from '../lib'
 import type { Redemption } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
+import { ReclaimStatusBadge } from './reclaim-status-badge'
 
 const MOBILE_SKELETON_KEYS = [
   'redemption-mobile-skeleton-1',
@@ -166,6 +167,12 @@ export function RedemptionsMobileList(props: RedemptionsMobileListProps) {
               <span className='font-medium tabular-nums'>
                 {formatQuota(redemption.quota)}
               </span>
+            </div>
+            <div className='flex items-center justify-between gap-2 text-xs'>
+              <span className='text-muted-foreground'>
+                {t('Limited Quota Reclaim')}
+              </span>
+              <ReclaimStatusBadge redemption={redemption} />
             </div>
           </div>
         )

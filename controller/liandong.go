@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	_ "golang.org/x/image/webp"
 	"gorm.io/gorm"
@@ -36,15 +37,16 @@ type liandongCreateOrderRequest struct {
 }
 
 type liandongSubscriptionSpec struct {
-	Title                   string `json:"title"`
-	Subtitle                string `json:"subtitle"`
-	DurationUnit            string `json:"duration_unit"`
-	DurationValue           int    `json:"duration_value"`
-	CustomSeconds           int64  `json:"custom_seconds"`
-	TotalAmount             int64  `json:"total_amount"`
-	QuotaResetPeriod        string `json:"quota_reset_period"`
-	QuotaResetCustomSeconds int64  `json:"quota_reset_custom_seconds"`
-	UpgradeGroup            string `json:"upgrade_group"`
+	Title                   string  `json:"title"`
+	Subtitle                string  `json:"subtitle"`
+	DurationUnit            string  `json:"duration_unit"`
+	DurationValue           int     `json:"duration_value"`
+	CustomSeconds           int64   `json:"custom_seconds"`
+	TotalAmount             int64   `json:"total_amount"`
+	QuotaResetPeriod        string  `json:"quota_reset_period"`
+	QuotaResetCustomSeconds int64   `json:"quota_reset_custom_seconds"`
+	UpgradeGroup            string  `json:"upgrade_group"`
+	GroupRatio              float64 `json:"group_ratio"`
 }
 
 type liandongPublicProduct struct {
@@ -53,6 +55,7 @@ type liandongPublicProduct struct {
 	GoodsType           string                    `json:"goods_type"`
 	Name                string                    `json:"name"`
 	QuotaAmount         int64                     `json:"quota_amount"`
+	GroupRatio          float64                   `json:"group_ratio"`
 	PlanID              int                       `json:"plan_id"`
 	ExpectedAmountMinor int64                     `json:"expected_amount_minor"`
 	Currency            string                    `json:"currency"`
@@ -157,6 +160,11 @@ func ListLiandongProducts(c *gin.Context) {
 		return
 	}
 	views := make([]liandongPublicProduct, 0, len(products))
+	userGroup := strings.TrimSpace(c.GetString("group"))
+	if userGroup == "" {
+		userGroup = "default"
+	}
+	userGroupRatio := ratio_setting.GetGroupRatio(userGroup)
 	for _, product := range products {
 		summary := summaries[product.ID]
 		view := liandongPublicProduct{
@@ -165,6 +173,7 @@ func ListLiandongProducts(c *gin.Context) {
 			GoodsType:           product.GoodsType,
 			Name:                product.Name,
 			QuotaAmount:         product.QuotaAmount,
+			GroupRatio:          userGroupRatio,
 			PlanID:              product.PlanID,
 			ExpectedAmountMinor: product.ExpectedAmountMinor,
 			Currency:            product.Currency,
@@ -173,7 +182,10 @@ func ListLiandongProducts(c *gin.Context) {
 			InventoryLevel:      liandongInventoryLevel(&product, summary),
 		}
 		if product.BusinessType == model.LiandongBusinessTypeSubscription {
-			view.Subscription = getLiandongSubscriptionSpec(product.PlanID)
+			view.Subscription = getLiandongSubscriptionSpec(product.PlanID, userGroup)
+			if view.Subscription != nil {
+				view.GroupRatio = view.Subscription.GroupRatio
+			}
 		}
 		views = append(views, view)
 	}
@@ -1281,15 +1293,23 @@ func makeLiandongRootProductView(
 		UpdatedAt:           product.UpdatedAt,
 	}
 	if product.BusinessType == model.LiandongBusinessTypeSubscription {
-		view.Subscription = getLiandongSubscriptionSpec(product.PlanID)
+		view.Subscription = getLiandongSubscriptionSpec(product.PlanID, "")
 	}
 	return view
 }
 
-func getLiandongSubscriptionSpec(planID int) *liandongSubscriptionSpec {
+func getLiandongSubscriptionSpec(planID int, fallbackGroup string) *liandongSubscriptionSpec {
 	plan, err := model.GetSubscriptionPlanById(planID)
 	if err != nil {
 		return nil
+	}
+	groupRatio := 1.0
+	ratioGroup := strings.TrimSpace(plan.UpgradeGroup)
+	if ratioGroup == "" {
+		ratioGroup = strings.TrimSpace(fallbackGroup)
+	}
+	if ratioGroup != "" {
+		groupRatio = ratio_setting.GetGroupRatio(ratioGroup)
 	}
 	return &liandongSubscriptionSpec{
 		Title:                   plan.Title,
@@ -1301,6 +1321,7 @@ func getLiandongSubscriptionSpec(planID int) *liandongSubscriptionSpec {
 		QuotaResetPeriod:        plan.QuotaResetPeriod,
 		QuotaResetCustomSeconds: plan.QuotaResetCustomSeconds,
 		UpgradeGroup:            plan.UpgradeGroup,
+		GroupRatio:              groupRatio,
 	}
 }
 

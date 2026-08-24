@@ -35,6 +35,7 @@ import { getRedemptions, searchRedemptions } from '../api'
 import {
   ERROR_MESSAGES,
   REDEMPTION_STATUS,
+  getReclaimStatusOptions,
   getRedemptionStatusOptions,
 } from '../constants'
 import { isRedemptionExpired } from '../lib'
@@ -58,6 +59,7 @@ export function RedemptionsTable() {
   const columns = useRedemptionsColumns()
   const { refreshTrigger } = useRedemptions()
   const isMobile = useMediaQuery('(max-width: 640px)')
+  const routeSearch = route.useSearch()
 
   const {
     globalFilter,
@@ -68,17 +70,29 @@ export function RedemptionsTable() {
     onPaginationChange,
     ensurePageInRange,
   } = useTableUrlState({
-    search: route.useSearch(),
+    search: routeSearch,
     navigate: route.useNavigate(),
     pagination: { defaultPage: 1, defaultPageSize: isMobile ? 10 : 20 },
     globalFilter: { enabled: true, key: 'filter' },
-    columnFilters: [{ columnId: 'status', searchKey: 'status', type: 'array' }],
+    columnFilters: [
+      { columnId: 'status', searchKey: 'status', type: 'array' },
+      {
+        columnId: 'reclaim_status',
+        searchKey: 'reclaimStatus',
+        type: 'array',
+      },
+    ],
   })
   const statusFilter =
     (columnFilters.find((filter) => filter.id === 'status')?.value as
       | string[]
       | undefined) ?? []
   const statusFilterValue = statusFilter[0] ?? ''
+  const reclaimStatusFilter =
+    (columnFilters.find((filter) => filter.id === 'reclaim_status')?.value as
+      | string[]
+      | undefined) ?? []
+  const reclaimStatusFilterValue = reclaimStatusFilter[0] ?? ''
 
   // Fetch data with React Query
   const { data, isLoading, isFetching } = useQuery({
@@ -88,22 +102,32 @@ export function RedemptionsTable() {
       pagination.pageSize,
       globalFilter,
       statusFilterValue,
+      reclaimStatusFilterValue,
+      routeSearch.expireStart,
+      routeSearch.expireEnd,
       refreshTrigger,
     ],
     queryFn: async () => {
       const hasFilter = globalFilter?.trim()
       const hasStatusFilter = statusFilterValue !== ''
+      const hasReclaimFilter = reclaimStatusFilterValue !== ''
+      const hasExpireFilter =
+        routeSearch.expireStart !== undefined ||
+        routeSearch.expireEnd !== undefined
       const params = {
         p: pagination.pageIndex + 1,
         page_size: pagination.pageSize,
       }
 
       const result =
-        hasFilter || hasStatusFilter
+        hasFilter || hasStatusFilter || hasReclaimFilter || hasExpireFilter
           ? await searchRedemptions({
               ...params,
               keyword: globalFilter,
               status: statusFilterValue,
+              reclaim_status: reclaimStatusFilterValue,
+              expire_start: routeSearch.expireStart,
+              expire_end: routeSearch.expireEnd,
             })
           : await getRedemptions(params)
 
@@ -111,7 +135,10 @@ export function RedemptionsTable() {
         toast.error(
           result.message ||
             t(
-              hasFilter || hasStatusFilter
+              hasFilter ||
+                hasStatusFilter ||
+                hasReclaimFilter ||
+                hasExpireFilter
                 ? ERROR_MESSAGES.SEARCH_FAILED
                 : ERROR_MESSAGES.LOAD_FAILED
             )
@@ -156,6 +183,7 @@ export function RedemptionsTable() {
     () => getRedemptionStatusOptions(t),
     [t]
   )
+  const reclaimStatusOptions = useMemo(() => getReclaimStatusOptions(t), [t])
 
   return (
     <DataTablePage
@@ -177,6 +205,12 @@ export function RedemptionsTable() {
             columnId: 'status',
             title: t('Status'),
             options: redemptionStatusOptions,
+            singleSelect: true,
+          },
+          {
+            columnId: 'reclaim_status',
+            title: t('Limited Quota Reclaim'),
+            options: reclaimStatusOptions,
             singleSelect: true,
           },
         ],

@@ -59,16 +59,17 @@ import type {
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import type { LiandongProduct, PaymentMethod, TopupInfo } from '../types'
-import { LiandongPaymentDialog } from './dialogs/liandong-payment-dialog'
-import { LiandongProductCard } from './liandong-product-card'
+import type { PaymentMethod, TopupInfo } from '../types'
 
 interface SubscriptionPlansCardProps {
   topupInfo: TopupInfo | null
   onAvailabilityChange?: (available: boolean) => void
   userQuota?: number
+  limitedQuota?: number
   onPurchaseSuccess?: () => void | Promise<void>
-  liandongProducts?: LiandongProduct[]
+  onBalanceRefresh?: () => void | Promise<void>
+  refreshKey?: number
+  liandongEnabled?: boolean
 }
 
 function getEpayMethods(payMethods: PaymentMethod[] = []): PaymentMethod[] {
@@ -113,16 +114,8 @@ export function SubscriptionPlansCard(props: SubscriptionPlansCardProps) {
 
   const [purchaseOpen, setPurchaseOpen] = useState(false)
   const [selectedPlan, setSelectedPlan] = useState<PlanRecord | null>(null)
-  const [selectedLiandongProduct, setSelectedLiandongProduct] =
-    useState<LiandongProduct | null>(null)
-  const [liandongPaymentOpen, setLiandongPaymentOpen] = useState(false)
-  const [liandongAttemptId, setLiandongAttemptId] = useState(0)
-
-  const configuredLiandongProducts = props.liandongProducts ?? []
   const liandongEnabled =
-    props.topupInfo?.enable_liandong_topup === true ||
-    configuredLiandongProducts.length > 0
-  const liandongProducts = liandongEnabled ? configuredLiandongProducts : []
+    props.liandongEnabled ?? props.topupInfo?.enable_liandong_topup === true
   const enableStripe = !!props.topupInfo?.enable_stripe_topup
   const enableCreem = !!props.topupInfo?.enable_creem_topup
   const enableWaffoPancake = !!props.topupInfo?.enable_waffo_pancake_topup
@@ -167,6 +160,11 @@ export function SubscriptionPlansCard(props: SubscriptionPlansCardProps) {
     init()
   }, [fetchPlans, fetchSelfSubscription])
 
+  useEffect(() => {
+    if (!props.refreshKey) return
+    void fetchSelfSubscription()
+  }, [fetchSelfSubscription, props.refreshKey])
+
   const handleRefresh = async () => {
     setRefreshing(true)
     try {
@@ -197,9 +195,7 @@ export function SubscriptionPlansCard(props: SubscriptionPlansCardProps) {
 
   const hasActive = activeSubscriptions.length > 0
   const hasAny = allSubscriptions.length > 0
-  const hasPurchasablePlans = liandongEnabled
-    ? liandongProducts.length > 0
-    : plans.length > 0
+  const hasPurchasablePlans = !liandongEnabled && plans.length > 0
   const isAvailable = loading || hasPurchasablePlans || hasAny
   const disablePref = !hasActive
   const isSubPref =
@@ -278,27 +274,6 @@ export function SubscriptionPlansCard(props: SubscriptionPlansCardProps) {
         disableHoverEffect
         contentClassName='space-y-4 sm:space-y-5'
       >
-        {liandongProducts.length > 0 && (
-          <div className='space-y-3'>
-            <p className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
-              {t('Liandong fixed products')}
-            </p>
-            <div className='grid grid-cols-[repeat(auto-fill,220px)] justify-center gap-3 sm:justify-start'>
-              {liandongProducts.map((product) => (
-                <LiandongProductCard
-                  key={product.id}
-                  product={product}
-                  onSelect={(selected) => {
-                    setSelectedLiandongProduct(selected)
-                    setLiandongAttemptId((current) => current + 1)
-                    setLiandongPaymentOpen(true)
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* My subscriptions & billing preference */}
         <div className='rounded-xl border p-3 sm:p-4'>
           <div className='flex flex-wrap items-center justify-between gap-2.5 sm:gap-3'>
@@ -682,7 +657,9 @@ export function SubscriptionPlansCard(props: SubscriptionPlansCardProps) {
           enableOnlineTopUp={enableOnlineTopUp}
           epayMethods={epayMethods}
           userQuota={props.userQuota}
+          limitedQuota={props.limitedQuota}
           onPurchaseSuccess={props.onPurchaseSuccess}
+          onBalanceRefresh={props.onBalanceRefresh}
           purchaseLimit={
             selectedPlan?.plan?.max_purchase_per_user
               ? Number(selectedPlan.plan.max_purchase_per_user)
@@ -695,22 +672,6 @@ export function SubscriptionPlansCard(props: SubscriptionPlansCardProps) {
           }
         />
       )}
-
-      <LiandongPaymentDialog
-        open={liandongPaymentOpen}
-        onOpenChange={(open) => {
-          setLiandongPaymentOpen(open)
-          if (!open) {
-            void fetchSelfSubscription()
-          }
-        }}
-        product={selectedLiandongProduct}
-        attemptId={liandongAttemptId}
-        onPaymentSuccess={async () => {
-          await fetchSelfSubscription()
-          await props.onPurchaseSuccess?.()
-        }}
-      />
     </>
   )
 }

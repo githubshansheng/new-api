@@ -90,7 +90,10 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	if relayInfo.UsePrice {
 		return nil
 	}
-	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
+	if _, _, err := model.SettleExpiredRedemptionQuotaForUser(relayInfo.UserId, common.GetTimestamp()); err != nil {
+		return err
+	}
+	userQuota, err := model.GetUserQuota(relayInfo.UserId, true)
 	if err != nil {
 		return err
 	}
@@ -407,8 +410,9 @@ func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 }
 
 type postConsumeQuotaResult struct {
-	FundingApplied bool
-	TokenApplied   bool
+	FundingApplied        bool
+	TokenApplied          bool
+	WalletQuotaAllocation model.WalletQuotaAllocation
 }
 
 func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) error {
@@ -433,9 +437,9 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 	} else {
 		// Wallet
 		if quota > 0 {
-			err = model.DecreaseUserQuota(relayInfo.UserId, quota, false)
+			result.WalletQuotaAllocation, err = model.DebitUserQuotaWithTimedAllocation(relayInfo.UserId, quota)
 		} else {
-			err = model.IncreaseUserQuota(relayInfo.UserId, -quota, false)
+			err = model.RefundUserQuotaWithTimedAllocation(relayInfo.UserId, -quota, nil)
 		}
 		if err != nil {
 			return result, err

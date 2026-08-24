@@ -146,6 +146,11 @@ func ChargeViolationFeeIfNeeded(ctx *gin.Context, relayInfo *relaycommon.RelayIn
 		"upstream_error_code":  fmt.Sprintf("%v", oai.Code),
 		"violation_fee_marker": CSAMViolationMarker,
 	}
+	if relayInfo.BillingSource == BillingSourceSubscription {
+		other["billing_source"] = BillingSourceSubscription
+	} else {
+		other["billing_source"] = BillingSourceWallet
+	}
 
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:      relayInfo.ChannelId,

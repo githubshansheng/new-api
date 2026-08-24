@@ -156,9 +156,12 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other map[string]interf
 	if relayInfo == nil || other == nil {
 		return
 	}
-	// billing_source: "wallet" or "subscription"
-	if relayInfo.BillingSource != "" {
-		other["billing_source"] = relayInfo.BillingSource
+	// billing_source is a flow marker only; wallet is the compatibility default
+	// for historical and zero-cost requests that did not select a subscription.
+	if relayInfo.BillingSource == BillingSourceSubscription {
+		other["billing_source"] = BillingSourceSubscription
+	} else {
+		other["billing_source"] = BillingSourceWallet
 	}
 	if relayInfo.UserSetting.BillingPreference != "" {
 		other["billing_preference"] = relayInfo.UserSetting.BillingPreference
@@ -298,6 +301,7 @@ func GenerateMjOtherInfo(relayInfo *relaycommon.RelayInfo, priceData hosttypes.P
 		other["user_group_ratio"] = priceData.GroupRatioInfo.GroupSpecialRatio
 	}
 	appendRequestPath(nil, relayInfo, other)
+	appendBillingInfo(relayInfo, other)
 	return other
 }
 

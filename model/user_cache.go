@@ -152,6 +152,18 @@ func cacheDecrUserQuota(userId int, delta int64) error {
 	return cacheIncrUserQuota(userId, -delta)
 }
 
+func syncUserQuotaCacheDelta(userId int, delta int64, operation string) {
+	if delta == 0 {
+		return
+	}
+	if err := cacheIncrUserQuota(userId, delta); err != nil {
+		common.SysLog(fmt.Sprintf("failed to sync %s user quota cache: %s", operation, err.Error()))
+		if invalidateErr := invalidateUserCache(userId); invalidateErr != nil {
+			common.SysLog(fmt.Sprintf("failed to invalidate %s user quota cache: %s", operation, invalidateErr.Error()))
+		}
+	}
+}
+
 // syncCreditUserQuotaCache 在授信事务（充值/兑换等）提交后同步把增量补进缓存
 // 余额。预扣以缓存值为准（存在期间），授信不能绕过它，否则新到账的额度在
 // 缓存过期前不可用；缓存未命中无需处理，下次读取会从已提交的数据库余额水合。
@@ -159,9 +171,7 @@ func syncCreditUserQuotaCache(userId int, quota int, operation string) {
 	if quota <= 0 {
 		return
 	}
-	if err := cacheIncrUserQuota(userId, int64(quota)); err != nil {
-		common.SysLog(fmt.Sprintf("failed to sync %s credit to user quota cache: %s", operation, err.Error()))
-	}
+	syncUserQuotaCacheDelta(userId, int64(quota), operation+" credit")
 }
 
 // Helper functions to get individual fields if needed

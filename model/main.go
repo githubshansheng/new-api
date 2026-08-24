@@ -257,6 +257,9 @@ func migrateDB() error {
 	if err := migrateTokenModelLimitsToText(); err != nil {
 		return err
 	}
+	if err := prepareRedemptionReclaimMigrations(DB); err != nil {
+		return err
+	}
 	if err := prepareLiandongMigrations(DB); err != nil {
 		return err
 	}
@@ -326,6 +329,9 @@ func migrateDB() error {
 }
 
 func migrateDBFast() error {
+	if err := prepareRedemptionReclaimMigrations(DB); err != nil {
+		return err
+	}
 	if err := prepareLiandongMigrations(DB); err != nil {
 		return err
 	}
@@ -423,6 +429,50 @@ func migrateLOGDB() error {
 		return migrateClickHouseLogDB()
 	}
 	return LOG_DB.AutoMigrate(&Log{})
+}
+
+type redemptionReclaimMigrationColumns struct {
+	ReclaimStatus         *int    `gorm:"not null;default:0"`
+	ReclaimRemainingQuota *int    `gorm:"not null;default:0"`
+	ReclaimedQuota        *int    `gorm:"not null;default:0"`
+	ReclaimEnabledTime    *int64  `gorm:"bigint;not null;default:0"`
+	ReclaimedTime         *int64  `gorm:"bigint;not null;default:0"`
+	ReclaimError          *string `gorm:"type:text"`
+}
+
+func (redemptionReclaimMigrationColumns) TableName() string {
+	return "redemptions"
+}
+
+func prepareRedemptionReclaimMigrations(db *gorm.DB) error {
+	if db == nil || !db.Migrator().HasTable(&Redemption{}) {
+		return nil
+	}
+	columns := []struct {
+		field  string
+		column string
+		value  any
+	}{
+		{field: "ReclaimStatus", column: "reclaim_status", value: 0},
+		{field: "ReclaimRemainingQuota", column: "reclaim_remaining_quota", value: 0},
+		{field: "ReclaimedQuota", column: "reclaimed_quota", value: 0},
+		{field: "ReclaimEnabledTime", column: "reclaim_enabled_time", value: int64(0)},
+		{field: "ReclaimedTime", column: "reclaimed_time", value: int64(0)},
+		{field: "ReclaimError", column: "reclaim_error", value: ""},
+	}
+	for _, column := range columns {
+		if !db.Migrator().HasColumn(&Redemption{}, column.field) {
+			if err := db.Migrator().AddColumn(&redemptionReclaimMigrationColumns{}, column.field); err != nil {
+				return fmt.Errorf("failed to add redemption reclaim column %s: %w", column.column, err)
+			}
+		}
+		if err := db.Unscoped().Model(&Redemption{}).
+			Where(column.column+" IS NULL").
+			UpdateColumn(column.column, column.value).Error; err != nil {
+			return fmt.Errorf("failed to normalize redemption reclaim column %s: %w", column.column, err)
+		}
+	}
+	return nil
 }
 
 type liandongProductMigrationColumns struct {

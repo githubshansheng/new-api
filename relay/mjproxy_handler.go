@@ -211,7 +211,13 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		}
 	}
 
-	userQuota, err := model.GetUserQuota(info.UserId, false)
+	if _, _, err := model.SettleExpiredRedemptionQuotaForUser(info.UserId, common.GetTimestamp()); err != nil {
+		return &dto.MidjourneyResponse{
+			Code:        4,
+			Description: err.Error(),
+		}
+	}
+	userQuota, err := model.GetUserQuota(info.UserId, true)
 	if err != nil {
 		return &dto.MidjourneyResponse{
 			Code:        4,
@@ -524,7 +530,13 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 
-	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
+	if _, _, err := model.SettleExpiredRedemptionQuotaForUser(relayInfo.UserId, common.GetTimestamp()); err != nil {
+		return &dto.MidjourneyResponse{
+			Code:        4,
+			Description: err.Error(),
+		}
+	}
+	userQuota, err := model.GetUserQuota(relayInfo.UserId, true)
 	if err != nil {
 		return &dto.MidjourneyResponse{
 			Code:        4,

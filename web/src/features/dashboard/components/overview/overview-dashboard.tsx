@@ -37,7 +37,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { motion, useReducedMotion } from 'motion/react'
-import { useMemo, useState } from 'react'
+import { lazy, Suspense, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -47,6 +47,7 @@ import {
 } from '@/components/page-transition'
 import { Button } from '@/components/ui/button'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
+import { Skeleton } from '@/components/ui/skeleton'
 import { fetchTokenKey, getApiKeys } from '@/features/keys/api'
 import type { ApiKey } from '@/features/keys/types'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
@@ -66,6 +67,12 @@ import { FAQPanel } from './faq-panel'
 import { PerformanceHealthPanel } from './performance-health-panel'
 import { SummaryCards } from './summary-cards'
 import { UptimePanel } from './uptime-panel'
+
+const LazyLimitedQuotaReclaimPanel = lazy(() =>
+  import('./limited-quota-reclaim-panel').then((module) => ({
+    default: module.LimitedQuotaReclaimPanel,
+  }))
+)
 
 const SETUP_GUIDE_VISIBILITY_STORAGE_KEY =
   'dashboard_overview_setup_guide_expanded'
@@ -771,6 +778,19 @@ export function OverviewDashboard() {
               {isAdmin && (
                 <CardStaggerItem className='lg:col-span-2'>
                   <PerformanceHealthPanel />
+                </CardStaggerItem>
+              )}
+              {isAdmin && (
+                <CardStaggerItem className='lg:col-span-2'>
+                  <Suspense
+                    fallback={
+                      <div className='rounded-xl border p-4'>
+                        <Skeleton className='h-64 w-full' />
+                      </div>
+                    }
+                  >
+                    <LazyLimitedQuotaReclaimPanel />
+                  </Suspense>
                 </CardStaggerItem>
               )}
               {showApiInfoPanel && (

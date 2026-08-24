@@ -25,6 +25,8 @@ import type {
   GetRedemptionsResponse,
   SearchRedemptionsParams,
   RedemptionFormData,
+  ReclaimEnableData,
+  ReclaimPreviewData,
 } from './types'
 
 // ============================================================================
@@ -44,10 +46,25 @@ export async function getRedemptions(
 export async function searchRedemptions(
   params: SearchRedemptionsParams
 ): Promise<GetRedemptionsResponse> {
-  const { keyword = '', status = '', p = 1, page_size = 10 } = params
+  const {
+    keyword = '',
+    status = '',
+    reclaim_status = '',
+    expire_start,
+    expire_end,
+    p = 1,
+    page_size = 10,
+  } = params
   const queryParams = new URLSearchParams()
   queryParams.set('keyword', keyword)
   if (status) queryParams.set('status', status)
+  if (reclaim_status) queryParams.set('reclaim_status', reclaim_status)
+  if (expire_start !== undefined) {
+    queryParams.set('expire_start', String(expire_start))
+  }
+  if (expire_end !== undefined) {
+    queryParams.set('expire_end', String(expire_end))
+  }
   queryParams.set('p', String(p))
   queryParams.set('page_size', String(page_size))
   const res = await api.get(`/api/redemption/search?${queryParams.toString()}`)
@@ -96,5 +113,23 @@ export async function deleteRedemption(id: number): Promise<ApiResponse> {
 // Delete invalid redemption codes (used, disabled, expired)
 export async function deleteInvalidRedemptions(): Promise<ApiResponse<number>> {
   const res = await api.delete('/api/redemption/invalid')
+  return res.data
+}
+
+export async function previewLimitedQuotaReclaim(
+  keys: string[]
+): Promise<ApiResponse<ReclaimPreviewData>> {
+  const res = await api.post('/api/redemption/reclaim/preview', { keys })
+  return res.data
+}
+
+export async function enableLimitedQuotaReclaim(data: {
+  keys: string[]
+  snapshot: string
+}): Promise<ApiResponse<ReclaimEnableData>> {
+  const res = await api.post('/api/redemption/reclaim/enable', data, {
+    skipErrorHandler: true,
+    skipBusinessError: true,
+  })
   return res.data
 }

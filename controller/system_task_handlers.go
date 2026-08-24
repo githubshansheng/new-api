@@ -23,6 +23,7 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
 	service.RegisterSystemTaskHandler(liandongPollHandler{})
+	service.RegisterSystemTaskHandler(redemptionQuotaReclaimHandler{})
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and
@@ -189,6 +190,27 @@ func (liandongPollHandler) Run(ctx context.Context, task *model.SystemTask, runn
 		return
 	}
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+type redemptionQuotaReclaimHandler struct{}
+
+func (redemptionQuotaReclaimHandler) Type() string { return model.SystemTaskTypeQuotaReclaim }
+
+func (redemptionQuotaReclaimHandler) Enabled() bool {
+	return model.HasDueRedemptionQuota(common.GetTimestamp())
+}
+
+func (redemptionQuotaReclaimHandler) Interval() time.Duration { return 15 * time.Second }
+
+func (redemptionQuotaReclaimHandler) NewPayload() any { return nil }
+
+func (redemptionQuotaReclaimHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	result, err := model.ReclaimExpiredRedemptionsBatch(ctx, common.GetTimestamp(), 100)
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, result, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, result, nil)
 }
 
 func finishSystemTaskHandler(task *model.SystemTask, runnerID string, status model.SystemTaskStatus, result any, runErr error) {

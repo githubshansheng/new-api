@@ -11,28 +11,37 @@ import (
 
 func AnonymousRequestBodyLimit() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		maxBytes := common.GetAnonymousRequestBodyLimitBytes()
-		if maxBytes <= 0 || c.Request.Body == nil {
-			c.Next()
-			return
-		}
-
-		originalBody := c.Request.Body
-		limitedBody, err := readAnonymousRequestBody(originalBody, maxBytes)
-		_ = originalBody.Close()
-		if err != nil {
-			if common.IsRequestBodyTooLargeError(err) {
-				c.AbortWithStatus(http.StatusRequestEntityTooLarge)
-				return
-			}
-			c.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-
-		c.Request.Body = io.NopCloser(bytes.NewReader(limitedBody))
-		c.Request.ContentLength = int64(len(limitedBody))
-		c.Next()
+		limitRequestBody(c, common.GetAnonymousRequestBodyLimitBytes())
 	}
+}
+
+func RequestBodyLimit(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		limitRequestBody(c, maxBytes)
+	}
+}
+
+func limitRequestBody(c *gin.Context, maxBytes int64) {
+	if maxBytes <= 0 || c.Request.Body == nil {
+		c.Next()
+		return
+	}
+
+	originalBody := c.Request.Body
+	limitedBody, err := readAnonymousRequestBody(originalBody, maxBytes)
+	_ = originalBody.Close()
+	if err != nil {
+		if common.IsRequestBodyTooLargeError(err) {
+			c.AbortWithStatus(http.StatusRequestEntityTooLarge)
+			return
+		}
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	c.Request.Body = io.NopCloser(bytes.NewReader(limitedBody))
+	c.Request.ContentLength = int64(len(limitedBody))
+	c.Next()
 }
 
 func readAnonymousRequestBody(body io.Reader, maxBytes int64) ([]byte, error) {

@@ -20,7 +20,10 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 import z from 'zod'
 
 import { Redemptions } from '@/features/redemption-codes'
-import { REDEMPTION_FILTER_VALUES } from '@/features/redemption-codes/constants'
+import {
+  RECLAIM_FILTER_VALUES,
+  REDEMPTION_FILTER_VALUES,
+} from '@/features/redemption-codes/constants'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -29,6 +32,9 @@ const redemptionsSearchSchema = z.object({
   pageSize: z.number().optional().catch(10),
   filter: z.string().optional().catch(''),
   status: z.array(z.enum(REDEMPTION_FILTER_VALUES)).optional().catch([]),
+  reclaimStatus: z.array(z.enum(RECLAIM_FILTER_VALUES)).optional().catch([]),
+  expireStart: z.number().nonnegative().optional().catch(undefined),
+  expireEnd: z.number().nonnegative().optional().catch(undefined),
 })
 
 export const Route = createFileRoute('/_authenticated/redemption-codes/')({

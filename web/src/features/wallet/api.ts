@@ -42,6 +42,7 @@ import type {
   LiandongProductsResponse,
   LiandongPaymentResponse,
   LiandongPaymentPageResponse,
+  LimitedQuotaResponse,
 } from './types'
 
 // ============================================================================
@@ -70,6 +71,13 @@ export async function redeemTopupCode(
   request: RedemptionRequest
 ): Promise<RedemptionResponse> {
   const res = await api.post('/api/user/topup', request)
+  return res.data
+}
+
+export async function getLimitedQuota(): Promise<LimitedQuotaResponse> {
+  const res = await api.get('/api/user/limited_quota', {
+    skipErrorHandler: true,
+  })
   return res.data
 }
 

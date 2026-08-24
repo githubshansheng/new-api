@@ -40,9 +40,11 @@ import {
   formatResetPeriod,
 } from '@/features/subscriptions/lib/format'
 import type { SubscriptionPlan } from '@/features/subscriptions/types'
+import { useSystemConfig } from '@/hooks/use-system-config'
 import {
   formatLiandongAmount,
-  formatLiandongQuota,
+  formatLiandongEffectiveQuota,
+  formatLiandongGroupRatio,
   localizeLiandongMessage,
 } from '@/lib/liandong-payment'
 import {
@@ -137,6 +139,7 @@ export function LiandongPaymentDialog({
   onPaymentSuccess,
 }: Props) {
   const { t } = useTranslation()
+  const { currency } = useSystemConfig()
   const [order, setOrder] = useState<LiandongPaymentView | null>(null)
   const [creating, setCreating] = useState(false)
   const [closing, setClosing] = useState(false)
@@ -640,7 +643,12 @@ export function LiandongPaymentDialog({
                 <div className='min-w-0'>
                   <dt className='text-muted-foreground'>{t('Total Quota')}</dt>
                   <dd className='break-words'>
-                    {formatLiandongQuota(product.quota_amount)}
+                    {formatLiandongEffectiveQuota(
+                      product.quota_amount,
+                      product.group_ratio,
+                      currency.quotaPerUnit,
+                      t('Official')
+                    )}
                   </dd>
                 </div>
               ) : (
@@ -660,8 +668,11 @@ export function LiandongPaymentDialog({
                       </dt>
                       <dd className='break-words'>
                         {product.subscription?.total_amount
-                          ? formatLiandongQuota(
-                              product.subscription.total_amount
+                          ? formatLiandongEffectiveQuota(
+                              product.subscription.total_amount,
+                              product.group_ratio,
+                              currency.quotaPerUnit,
+                              t('Official')
                             )
                           : t('Unlimited')}
                       </dd>
@@ -679,7 +690,13 @@ export function LiandongPaymentDialog({
                         {t('Upgrade Group')}
                       </dt>
                       <dd className='break-words'>
-                        {product.subscription?.upgrade_group || t('No change')}
+                        {product.subscription?.upgrade_group
+                          ? formatLiandongGroupRatio(
+                              product.subscription.upgrade_group,
+                              product.group_ratio,
+                              t('Multiplier')
+                            )
+                          : t('No change')}
                       </dd>
                     </div>
                   </>

@@ -33,6 +33,12 @@ export const redemptionSchema = z.object({
   redeemed_time: z.number(),
   expired_time: z.number(), // 0 for never expires
   used_user_id: z.number(),
+  reclaim_status: z.number().optional(),
+  reclaim_remaining_quota: z.number().optional(),
+  reclaimed_quota: z.number().optional(),
+  reclaim_enabled_time: z.number().optional(),
+  reclaimed_time: z.number().optional(),
+  reclaim_error: z.string().optional(),
 })
 
 export type Redemption = z.infer<typeof redemptionSchema>
@@ -66,6 +72,9 @@ export interface GetRedemptionsResponse {
 export interface SearchRedemptionsParams {
   keyword?: string
   status?: string
+  reclaim_status?: string
+  expire_start?: number
+  expire_end?: number
   p?: number
   page_size?: number
 }
@@ -79,8 +88,56 @@ export interface RedemptionFormData {
   status?: number // Only for status update
 }
 
+export type ReclaimPreviewResult =
+  | 'eligible'
+  | 'already_enabled'
+  | 'manual_review'
+  | 'not_found'
+  | 'no_expiry'
+  | 'expired_unused'
+  | 'conflict'
+
+export interface ReclaimPreviewItem {
+  key: string
+  id?: number
+  name?: string
+  redemption_status?: number
+  quota: number
+  used_user_id: number
+  username?: string
+  redeemed_time: number
+  expired_time: number
+  remaining_quota: number
+  result: ReclaimPreviewResult
+  reason?: string
+  can_enable: boolean
+}
+
+export interface ReclaimPreviewData {
+  snapshot: string
+  summary: {
+    code_count: number
+    user_count: number
+    total_quota: number
+    deadline_count: number
+    exception_count: number
+  }
+  items: ReclaimPreviewItem[]
+}
+
+export interface ReclaimEnableData {
+  enabled_count: number
+  manual_review_count: number
+  skipped_count: number
+}
+
 // ============================================================================
 // Dialog Types
 // ============================================================================
 
-export type RedemptionsDialogType = 'create' | 'update' | 'delete' | 'view'
+export type RedemptionsDialogType =
+  | 'create'
+  | 'update'
+  | 'delete'
+  | 'view'
+  | 'reclaim'

@@ -776,7 +776,9 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 	var logPlanTitle string
 	var logMoney float64
 	var chargedQuota int
+	var reclaimedQuota int
 	var upgradeGroup string
+	var balanceErr error
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		plan, err := getSubscriptionPlanByIdTx(tx, planId)
 		if err != nil {
@@ -801,8 +803,19 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 		if err := lockForUpdate(tx).Where("id = ?", userId).First(&user).Error; err != nil {
 			return err
 		}
-		if requiredQuota > 0 && user.Quota < requiredQuota {
-			return common.NewMessage("Insufficient balance")
+		now := common.GetTimestamp()
+		reclaimedQuota, _, err = settleExpiredRedemptionQuotaTx(tx, userId, now)
+		if err != nil {
+			return err
+		}
+		limitedQuota, err := SumActiveLimitedQuotaTx(tx, userId, now, true)
+		if err != nil {
+			return err
+		}
+		availableQuota := int64(user.Quota) - int64(reclaimedQuota) - int64(limitedQuota)
+		if requiredQuota > 0 && availableQuota < int64(requiredQuota) {
+			balanceErr = errors.New("余额不足")
+			return nil
 		}
 		if requiredQuota > 0 {
 			if err := tx.Model(&User{}).Where("id = ?", userId).
@@ -816,7 +829,6 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 			return err
 		}
 
-		now := common.GetTimestamp()
 		tradeNo := fmt.Sprintf("SUBBALUSR%dNO%s%d", userId, common.GetRandomString(6), time.Now().UnixNano())
 		order := &SubscriptionOrder{
 			UserId:          userId,
@@ -844,6 +856,10 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	if balanceErr != nil {
+		return balanceErr
 	}
 
 	if chargedQuota > 0 {

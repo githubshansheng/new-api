@@ -3,7 +3,6 @@ package model
 import (
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 
@@ -612,8 +611,8 @@ func ValidateLiandongProduct(product *LiandongProduct) error {
 	}
 	switch product.BusinessType {
 	case LiandongBusinessTypeQuota:
-		if product.QuotaAmount <= 0 || product.QuotaAmount > math.MaxInt32 {
-			return errors.New("quota amount must be between 1 and 2147483647")
+		if product.QuotaAmount <= 0 || product.QuotaAmount > int64(common.MaxWalletQuota) {
+			return fmt.Errorf("quota amount must be between 1 and %d", common.MaxWalletQuota)
 		}
 		product.PlanID = 0
 	case LiandongBusinessTypeSubscription:
@@ -1702,13 +1701,8 @@ func FulfillLiandongOrder(localTradeNo string) (*LiandongFulfillmentResult, erro
 			if err := common.UnmarshalJsonStr(order.FulfillmentSnapshot, &snapshot); err != nil {
 				return err
 			}
-			if snapshot.QuotaAmount <= 0 || snapshot.QuotaAmount > math.MaxInt32 {
+			if snapshot.QuotaAmount <= 0 || snapshot.QuotaAmount > int64(common.MaxWalletQuota) {
 				return errors.New("invalid quota snapshot")
-			}
-			currentQuota := int64(user.Quota)
-			if currentQuota < 0 || currentQuota > math.MaxInt32 ||
-				snapshot.QuotaAmount > math.MaxInt32-currentQuota {
-				return errors.New("quota fulfillment exceeds storage limit")
 			}
 			var topUp TopUp
 			if err := lockForUpdate(tx).Where("trade_no = ?", order.LocalTradeNo).First(&topUp).Error; err != nil {
@@ -1721,8 +1715,8 @@ func FulfillLiandongOrder(localTradeNo string) (*LiandongFulfillmentResult, erro
 				return ErrTopUpStatusInvalid
 			}
 			if topUp.Status == common.TopUpStatusPending {
-				if err := tx.Model(&User{}).Where("id = ?", order.UserID).
-					Update("quota", currentQuota+snapshot.QuotaAmount).Error; err != nil {
+				quotaToAdd := int(snapshot.QuotaAmount)
+				if err := creditTopUpQuota(tx, order.UserID, quotaToAdd, nil); err != nil {
 					return err
 				}
 				topUp.Status = common.TopUpStatusSuccess

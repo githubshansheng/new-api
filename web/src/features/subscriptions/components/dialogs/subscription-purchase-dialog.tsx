@@ -60,7 +60,9 @@ interface Props {
   purchaseLimit?: number
   purchaseCount?: number
   userQuota?: number
+  limitedQuota?: number
   onPurchaseSuccess?: () => void | Promise<void>
+  onBalanceRefresh?: () => void | Promise<void>
   liandongProduct?: LiandongProduct
   onLiandongPayment?: (product: LiandongProduct) => void
 }
@@ -102,9 +104,11 @@ export function SubscriptionPurchaseDialog(props: Props) {
     0,
     Math.ceil(Number(plan.price_amount || 0) * quotaPerUnit)
   )
-  const userQuota = Math.max(0, Number(props.userQuota || 0))
+  const userQuota = Number(props.userQuota ?? 0)
+  const limitedQuota = Math.max(0, Number(props.limitedQuota ?? 0))
+  const availableForSubscription = userQuota - limitedQuota
   const allowBalancePay = plan.allow_balance_pay !== false
-  const insufficientBalance = userQuota < balanceCost
+  const insufficientBalance = availableForSubscription < balanceCost
   const limitReached =
     (props.purchaseLimit || 0) > 0 &&
     (props.purchaseCount || 0) >= (props.purchaseLimit || 0)
@@ -218,13 +222,21 @@ export function SubscriptionPurchaseDialog(props: Props) {
       const res = await paySubscriptionBalance({ plan_id: plan.id })
       if (res.success) {
         toast.success(t('Subscription purchased successfully'))
-        void props.onPurchaseSuccess?.()
+        await Promise.resolve()
+          .then(() => props.onPurchaseSuccess?.())
+          .catch(() => undefined)
         props.onOpenChange(false)
       } else {
         handleServerError(res, t('Payment request failed'))
+        await Promise.resolve()
+          .then(() => props.onBalanceRefresh?.())
+          .catch(() => undefined)
       }
     } catch (error) {
       handleServerError(error, t('Payment request failed'))
+      await Promise.resolve()
+        .then(() => props.onBalanceRefresh?.())
+        .catch(() => undefined)
     } finally {
       setPaying(false)
     }
@@ -311,8 +323,22 @@ export function SubscriptionPurchaseDialog(props: Props) {
             <span>{formatQuota(balanceCost)}</span>
           </div>
           <div className='flex items-center justify-between gap-2 text-xs'>
-            <span className='text-muted-foreground'>{t('Available')}</span>
+            <span className='text-muted-foreground'>
+              {t('Wallet Total Balance')}
+            </span>
             <span>{formatQuota(userQuota)}</span>
+          </div>
+          <div className='flex items-center justify-between gap-2 text-xs'>
+            <span className='text-muted-foreground'>
+              {t('Limited Quota (Not Available for Subscriptions)')}
+            </span>
+            <span>{formatQuota(limitedQuota)}</span>
+          </div>
+          <div className='flex items-center justify-between gap-2 text-xs'>
+            <span className='text-muted-foreground'>
+              {t('Available for Subscription')}
+            </span>
+            <span>{formatQuota(availableForSubscription)}</span>
           </div>
           {!allowBalancePay ? (
             <Alert variant='destructive'>
@@ -323,7 +349,14 @@ export function SubscriptionPurchaseDialog(props: Props) {
           ) : (
             insufficientBalance && (
               <Alert variant='destructive'>
-                <AlertDescription>{t('Insufficient balance')}</AlertDescription>
+                <AlertDescription>
+                  {limitedQuota > 0
+                    ? t(
+                        'Limited quota cannot be used to purchase subscriptions. Current regular balance: {{quota}}.',
+                        { quota: formatQuota(availableForSubscription) }
+                      )
+                    : t('Insufficient balance')}
+                </AlertDescription>
               </Alert>
             )
           )}

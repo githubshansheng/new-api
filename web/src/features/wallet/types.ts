@@ -78,6 +78,7 @@ export interface LiandongSubscriptionSpec {
   quota_reset_period: string
   quota_reset_custom_seconds: number
   upgrade_group: string
+  group_ratio: number
 }
 
 export interface LiandongProduct {
@@ -86,6 +87,7 @@ export interface LiandongProduct {
   goods_type: string
   name: string
   quota_amount: number
+  group_ratio: number
   plan_id: number
   expected_amount_minor: number
   currency: string
@@ -307,6 +309,18 @@ export interface UserWalletData {
   /** User group */
   group: string
 }
+
+export interface LimitedQuotaGroup {
+  expired_time: number
+  remaining_quota: number
+}
+
+export interface LimitedQuotaSummary {
+  total: number
+  groups: LimitedQuotaGroup[]
+}
+
+export type LimitedQuotaResponse = ApiResponse<LimitedQuotaSummary>
 
 /**
  * Topup record status

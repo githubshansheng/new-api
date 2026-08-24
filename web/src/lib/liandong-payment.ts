@@ -18,6 +18,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import i18next, { type TFunction } from 'i18next'
 
+import { toIntlLocale } from '@/i18n/languages'
+import { DEFAULT_CURRENCY_CONFIG } from '@/stores/system-config-store'
+
 import { formatQuota } from './format.ts'
 
 export {
@@ -43,6 +46,68 @@ export function formatLiandongAmount(
 
 export function formatLiandongQuota(quota: number): string {
   return `${Intl.NumberFormat().format(quota)}（${formatQuota(quota)}）`
+}
+
+export function calculateLiandongEffectiveQuotaUSD(
+  quota: number,
+  groupRatio = 1,
+  quotaPerUnit = DEFAULT_CURRENCY_CONFIG.quotaPerUnit
+): number | null {
+  if (
+    !Number.isFinite(quota) ||
+    quota < 0 ||
+    !Number.isFinite(groupRatio) ||
+    groupRatio <= 0 ||
+    !Number.isFinite(quotaPerUnit) ||
+    quotaPerUnit <= 0
+  ) {
+    return null
+  }
+  return quota / quotaPerUnit / groupRatio
+}
+
+export function formatLiandongEffectiveQuota(
+  quota: number,
+  groupRatio = 1,
+  quotaPerUnit = DEFAULT_CURRENCY_CONFIG.quotaPerUnit,
+  officialLabel = i18next.t('Official')
+): string {
+  const quotaCNY = calculateLiandongEffectiveQuotaUSD(quota, 1, quotaPerUnit)
+  if (quotaCNY === null) return formatLiandongQuota(quota)
+
+  const effectiveQuota = calculateLiandongEffectiveQuotaUSD(
+    quota,
+    groupRatio,
+    quotaPerUnit
+  )
+  const officialQuotaFormatter = Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 0,
+  })
+  const cnyFormatter = Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 4,
+  })
+  const formattedUSD = officialQuotaFormatter.format(effectiveQuota ?? quotaCNY)
+  const formattedCNY = cnyFormatter.format(quotaCNY)
+  return `≈${officialLabel}$${formattedUSD}（￥${formattedCNY}）`
+}
+
+export function formatLiandongGroupRatio(
+  group: string,
+  groupRatio: number,
+  multiplierLabel = i18next.t('Multiplier'),
+  locale = i18next.resolvedLanguage
+): string {
+  const normalizedGroup = group.trim()
+  if (!normalizedGroup || !Number.isFinite(groupRatio) || groupRatio <= 0) {
+    return normalizedGroup
+  }
+  let formattedRatio = Intl.NumberFormat(toIntlLocale(locale), {
+    maximumFractionDigits: 4,
+  }).format(groupRatio)
+  if (locale?.toLowerCase().startsWith('zh')) {
+    formattedRatio = formattedRatio.replace('.', ',')
+  }
+  return `${normalizedGroup}(${multiplierLabel}${formattedRatio})`
 }
 
 const liandongMessageAliases: Record<string, string> = {

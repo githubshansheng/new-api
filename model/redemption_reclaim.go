@@ -121,6 +121,10 @@ func settleExpiredRedemptionQuotaTx(tx *gorm.DB, userId int, now int64) (int, in
 	if err != nil {
 		return 0, 0, err
 	}
+	return settleRedemptionQuotaRowsTx(tx, userId, due, now)
+}
+
+func settleRedemptionQuotaRowsTx(tx *gorm.DB, userId int, due []Redemption, now int64) (int, int, error) {
 	if len(due) == 0 {
 		return 0, 0, nil
 	}

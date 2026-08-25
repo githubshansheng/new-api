@@ -30,6 +30,9 @@ type Redemption struct {
 	ReclaimEnabledTime    int64          `json:"reclaim_enabled_time" gorm:"bigint;not null;default:0"`
 	ReclaimedTime         int64          `json:"reclaimed_time" gorm:"bigint;not null;default:0;index:idx_redemption_reclaim_completed,priority:2"`
 	ReclaimError          string         `json:"reclaim_error" gorm:"type:text"`
+	ReclaimReviewedBy     int            `json:"reclaim_reviewed_by" gorm:"not null;default:0"`
+	ReclaimReviewedTime   int64          `json:"reclaim_reviewed_time" gorm:"bigint;not null;default:0"`
+	ReclaimReviewNote     string         `json:"reclaim_review_note" gorm:"type:text"`
 }
 
 var (

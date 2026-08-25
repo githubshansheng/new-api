@@ -24,9 +24,15 @@ const (
 	maxRedemptionReclaimPreviewKeys       = 1000
 	maxRedemptionReclaimKeyBytes          = 128
 	maxRedemptionReclaimHistoricalLogRows = 100000
+	maxRedemptionReclaimReviewNoteBytes   = 2000
 )
 
-var ErrRedemptionReclaimPreviewConflict = errors.New("redemption reclaim preview changed")
+var (
+	ErrRedemptionReclaimPreviewConflict = errors.New("redemption reclaim preview changed")
+	ErrRedemptionReclaimNotManualReview = errors.New("redemption is not awaiting manual review")
+	ErrRedemptionReclaimReviewInvalid   = errors.New("invalid redemption reclaim review")
+	ErrRedemptionReclaimReconstruct     = errors.New("automatic historical reconstruction failed")
+)
 
 type RedemptionReclaimPreviewItem struct {
 	Key              string `json:"key"`
@@ -70,6 +76,15 @@ type RedemptionReclaimEnableResult struct {
 	EnabledCount      int `json:"enabled_count"`
 	ManualReviewCount int `json:"manual_review_count"`
 	SkippedCount      int `json:"skipped_count"`
+}
+
+type RedemptionReclaimReviewResult struct {
+	UserId         int   `json:"user_id"`
+	RedemptionIds  []int `json:"redemption_ids"`
+	UpdatedCount   int   `json:"updated_count"`
+	PendingCount   int   `json:"pending_count"`
+	CompletedCount int   `json:"completed_count"`
+	ReclaimedQuota int   `json:"reclaimed_quota"`
 }
 
 type redemptionReclaimUserSnapshot struct {
@@ -212,13 +227,13 @@ func logBillingSource(log *Log) string {
 	return ""
 }
 
-func getUserLoggedNetQuota(userId int) (int64, error) {
+func getUserLoggedNetQuota(logDB *gorm.DB, userId int) (int64, error) {
 	type quotaTotal struct {
 		ConsumeQuota int64 `gorm:"column:consume_quota"`
 		RefundQuota  int64 `gorm:"column:refund_quota"`
 	}
 	total := quotaTotal{}
-	if err := LOG_DB.Model(&Log{}).
+	if err := logDB.Model(&Log{}).
 		Select(
 			"COALESCE(SUM(CASE WHEN type = ? THEN quota ELSE 0 END), 0) AS consume_quota, "+
 				"COALESCE(SUM(CASE WHEN type = ? THEN quota ELSE 0 END), 0) AS refund_quota",
@@ -233,6 +248,8 @@ func getUserLoggedNetQuota(userId int) (int64, error) {
 }
 
 func reconstructRedemptionRemainders(
+	db *gorm.DB,
+	logDB *gorm.DB,
 	user *User,
 	candidates []*Redemption,
 	now int64,
@@ -244,7 +261,7 @@ func reconstructRedemptionRemainders(
 		return nil, errors.New("consumption logging is disabled")
 	}
 
-	loggedNetQuota, err := getUserLoggedNetQuota(user.Id)
+	loggedNetQuota, err := getUserLoggedNetQuota(logDB, user.Id)
 	if err != nil {
 		return nil, fmt.Errorf("query consumption log totals: %w", err)
 	}
@@ -252,13 +269,21 @@ func reconstructRedemptionRemainders(
 		return nil, fmt.Errorf("consumption logs do not reconcile with used quota")
 	}
 
+	candidateIds := make(map[int]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		candidateIds[candidate.Id] = struct{}{}
+	}
+
 	var existing []Redemption
-	if err := DB.Where("used_user_id = ? AND reclaim_status != ?", user.Id, RedemptionReclaimStatusDisabled).
+	if err := db.Where("used_user_id = ? AND reclaim_status != ?", user.Id, RedemptionReclaimStatusDisabled).
 		Order("redeemed_time, id").
 		Find(&existing).Error; err != nil {
 		return nil, err
 	}
 	for i := range existing {
+		if _, retrying := candidateIds[existing[i].Id]; retrying {
+			continue
+		}
 		if existing[i].ReclaimStatus == RedemptionReclaimStatusManualReview {
 			return nil, errors.New("the user already has limited quota awaiting manual review")
 		}
@@ -267,6 +292,9 @@ func reconstructRedemptionRemainders(
 	redemptions := make([]*Redemption, 0, len(existing)+len(candidates))
 	minimumTime := int64(0)
 	for i := range existing {
+		if _, retrying := candidateIds[existing[i].Id]; retrying {
+			continue
+		}
 		if existing[i].RedeemedTime <= 0 || existing[i].Quota < 0 || existing[i].ExpiredTime <= 0 {
 			continue
 		}
@@ -286,7 +314,7 @@ func reconstructRedemptionRemainders(
 	}
 
 	var logs []Log
-	if err := LOG_DB.Select("created_at", "type", "quota", "other", "request_id").
+	if err := logDB.Select("created_at", "type", "quota", "other", "request_id").
 		Where("user_id = ? AND type IN ? AND created_at >= ?", user.Id, []int{LogTypeConsume, LogTypeRefund}, minimumTime).
 		Order("created_at, request_id").
 		Limit(maxRedemptionReclaimHistoricalLogRows + 1).
@@ -484,10 +512,14 @@ func reconstructRedemptionRemainders(
 	result := make(map[int]int, len(candidates))
 	for _, candidate := range candidates {
 		lot := lots[candidate.Id]
-		if lot == nil || lot.expired {
+		if lot == nil {
 			return nil, errors.New("historical redemption data is incomplete")
 		}
-		result[candidate.Id] = lot.remaining
+		if lot.expired {
+			result[candidate.Id] = expiredRemainders[candidate.Id]
+		} else {
+			result[candidate.Id] = lot.remaining
+		}
 	}
 	return result, nil
 }
@@ -589,9 +621,6 @@ func PreviewRedemptionReclaims(keys []string, now int64) (*RedemptionReclaimPrev
 			case redemption.UsedUserId <= 0 || redemption.RedeemedTime <= 0:
 				item.Result = RedemptionReclaimPreviewManualReview
 				item.Reason = "redemption record is incomplete"
-			case redemption.ExpiredTime < now:
-				item.Result = RedemptionReclaimPreviewManualReview
-				item.Reason = "redeemed quota is already past its deadline"
 			default:
 				item.Result = RedemptionReclaimPreviewEligible
 				item.RemainingQuota = 0
@@ -603,7 +632,7 @@ func PreviewRedemptionReclaims(keys []string, now int64) (*RedemptionReclaimPrev
 	}
 
 	for userId, candidates := range candidatesByUser {
-		remainingById, reconstructErr := reconstructRedemptionRemainders(users[userId], candidates, now)
+		remainingById, reconstructErr := reconstructRedemptionRemainders(DB, LOG_DB, users[userId], candidates, now)
 		for _, candidate := range candidates {
 			index := itemIndexById[candidate.Id]
 			if reconstructErr != nil {
@@ -744,15 +773,17 @@ func EnableRedemptionReclaims(keys []string, snapshot string, now int64) (Redemp
 			if redemption == nil || redemption.Key != item.Key || redemption.Status != item.RedemptionStatus ||
 				redemption.Quota != item.Quota || redemption.UsedUserId != item.UsedUserId ||
 				redemption.RedeemedTime != item.RedeemedTime || redemption.ExpiredTime != item.ExpiredTime ||
-				redemption.ReclaimStatus != RedemptionReclaimStatusDisabled ||
-				(item.Result == RedemptionReclaimPreviewEligible && redemption.ExpiredTime < now) {
+				redemption.ReclaimStatus != RedemptionReclaimStatusDisabled {
 				return ErrRedemptionReclaimPreviewConflict
 			}
 
 			updates := map[string]any{
-				"reclaim_enabled_time": now,
-				"reclaimed_quota":      0,
-				"reclaimed_time":       0,
+				"reclaim_enabled_time":  now,
+				"reclaimed_quota":       0,
+				"reclaimed_time":        0,
+				"reclaim_reviewed_by":   0,
+				"reclaim_reviewed_time": 0,
+				"reclaim_review_note":   "",
 			}
 			if item.Result == RedemptionReclaimPreviewManualReview {
 				updates["reclaim_status"] = RedemptionReclaimStatusManualReview
@@ -786,6 +817,275 @@ func EnableRedemptionReclaims(keys []string, snapshot string, now int64) (Redemp
 			return RedemptionReclaimEnableResult{}, ErrRedemptionReclaimPreviewConflict
 		}
 		return RedemptionReclaimEnableResult{}, err
+	}
+	return result, nil
+}
+
+func lockUserForRedemptionReviewTx(tx *gorm.DB, userId int) (*User, error) {
+	user, err := lockUserForQuotaUpdate(tx, userId)
+	if err != nil {
+		return nil, err
+	}
+	expectedQuota := user.Quota
+	expectedUsedQuota := user.UsedQuota
+	if err := tx.Model(&User{}).
+		Where("id = ? AND quota = ? AND used_quota = ?", userId, expectedQuota, expectedUsedQuota).
+		UpdateColumn("quota", gorm.Expr("quota")).Error; err != nil {
+		return nil, err
+	}
+	if err := tx.Select("id", "quota", "used_quota").Where("id = ?", userId).First(user).Error; err != nil {
+		return nil, err
+	}
+	if user.Quota != expectedQuota || user.UsedQuota != expectedUsedQuota {
+		return nil, ErrRedemptionReclaimPreviewConflict
+	}
+	return user, nil
+}
+
+func redemptionReclaimLogDBForTx(tx *gorm.DB) *gorm.DB {
+	if LOG_DB == DB {
+		return tx
+	}
+	return LOG_DB
+}
+
+func RetryManualRedemptionReclaims(redemptionId int, reviewerId int, now int64) (RedemptionReclaimReviewResult, error) {
+	if redemptionId <= 0 || reviewerId <= 0 {
+		return RedemptionReclaimReviewResult{}, ErrRedemptionReclaimReviewInvalid
+	}
+	if now <= 0 {
+		now = common.GetTimestamp()
+	}
+
+	target := Redemption{}
+	if err := DB.Select("id", "used_user_id", "reclaim_status").Where("id = ?", redemptionId).First(&target).Error; err != nil {
+		return RedemptionReclaimReviewResult{}, err
+	}
+	if target.ReclaimStatus != RedemptionReclaimStatusManualReview {
+		return RedemptionReclaimReviewResult{}, ErrRedemptionReclaimNotManualReview
+	}
+	if target.UsedUserId <= 0 {
+		return RedemptionReclaimReviewResult{}, fmt.Errorf("%w: redemption user is unavailable", ErrRedemptionReclaimReviewInvalid)
+	}
+
+	result := RedemptionReclaimReviewResult{UserId: target.UsedUserId}
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		user, err := lockUserForRedemptionReviewTx(tx, target.UsedUserId)
+		if err != nil {
+			return err
+		}
+
+		var manual []Redemption
+		if err := lockForUpdate(tx).
+			Where("used_user_id = ? AND reclaim_status = ?", target.UsedUserId, RedemptionReclaimStatusManualReview).
+			Order("redeemed_time, id").
+			Find(&manual).Error; err != nil {
+			return err
+		}
+		foundTarget := false
+		candidates := make([]*Redemption, 0, len(manual))
+		for i := range manual {
+			if manual[i].Id == redemptionId {
+				foundTarget = true
+			}
+			candidates = append(candidates, &manual[i])
+		}
+		if !foundTarget {
+			return ErrRedemptionReclaimNotManualReview
+		}
+
+		remainingById, err := reconstructRedemptionRemainders(
+			tx,
+			redemptionReclaimLogDBForTx(tx),
+			user,
+			candidates,
+			now,
+		)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrRedemptionReclaimReconstruct, err)
+		}
+
+		settleRows := make([]Redemption, 0, len(manual))
+		for i := range manual {
+			remaining, ok := remainingById[manual[i].Id]
+			if !ok || remaining < 0 || remaining > manual[i].Quota {
+				return ErrRedemptionReclaimReviewInvalid
+			}
+			update := tx.Model(&Redemption{}).
+				Where("id = ? AND reclaim_status = ?", manual[i].Id, RedemptionReclaimStatusManualReview).
+				Updates(map[string]any{
+					"reclaim_status":          RedemptionReclaimStatusPending,
+					"reclaim_remaining_quota": remaining,
+					"reclaimed_quota":         0,
+					"reclaimed_time":          0,
+					"reclaim_error":           "",
+					"reclaim_reviewed_by":     reviewerId,
+					"reclaim_reviewed_time":   now,
+					"reclaim_review_note":     "",
+				})
+			if update.Error != nil {
+				return update.Error
+			}
+			if update.RowsAffected != 1 {
+				return ErrRedemptionReclaimPreviewConflict
+			}
+			manual[i].ReclaimStatus = RedemptionReclaimStatusPending
+			manual[i].ReclaimRemainingQuota = remaining
+			manual[i].ReclaimedQuota = 0
+			result.RedemptionIds = append(result.RedemptionIds, manual[i].Id)
+			result.UpdatedCount++
+			if remaining == 0 || manual[i].ExpiredTime < now {
+				settleRows = append(settleRows, manual[i])
+			} else {
+				result.PendingCount++
+			}
+		}
+
+		reclaimed, completed, err := settleRedemptionQuotaRowsTx(tx, target.UsedUserId, settleRows, now)
+		if err != nil {
+			return err
+		}
+		result.ReclaimedQuota = reclaimed
+		result.CompletedCount = completed
+		return nil
+	})
+	if err != nil {
+		return RedemptionReclaimReviewResult{}, err
+	}
+	if result.ReclaimedQuota > 0 {
+		syncUserQuotaCacheDelta(target.UsedUserId, -int64(result.ReclaimedQuota), "limited quota review retry")
+	}
+	return result, nil
+}
+
+func ResolveManualRedemptionReclaim(
+	redemptionId int,
+	reviewerId int,
+	remainingQuota int,
+	note string,
+	now int64,
+) (RedemptionReclaimReviewResult, error) {
+	note = strings.TrimSpace(note)
+	if redemptionId <= 0 || reviewerId <= 0 || remainingQuota < 0 || note == "" || len(note) > maxRedemptionReclaimReviewNoteBytes {
+		return RedemptionReclaimReviewResult{}, ErrRedemptionReclaimReviewInvalid
+	}
+	if now <= 0 {
+		now = common.GetTimestamp()
+	}
+
+	target := Redemption{}
+	if err := DB.Select("id", "used_user_id", "reclaim_status").Where("id = ?", redemptionId).First(&target).Error; err != nil {
+		return RedemptionReclaimReviewResult{}, err
+	}
+	if target.ReclaimStatus != RedemptionReclaimStatusManualReview {
+		return RedemptionReclaimReviewResult{}, ErrRedemptionReclaimNotManualReview
+	}
+	if target.UsedUserId <= 0 && remainingQuota > 0 {
+		return RedemptionReclaimReviewResult{}, fmt.Errorf("%w: cannot reclaim quota without a redemption user", ErrRedemptionReclaimReviewInvalid)
+	}
+
+	result := RedemptionReclaimReviewResult{UserId: target.UsedUserId}
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if target.UsedUserId <= 0 {
+			redemption := Redemption{}
+			if err := lockForUpdate(tx).Where("id = ?", redemptionId).First(&redemption).Error; err != nil {
+				return err
+			}
+			if redemption.ReclaimStatus != RedemptionReclaimStatusManualReview {
+				return ErrRedemptionReclaimNotManualReview
+			}
+			if remainingQuota != 0 {
+				return ErrRedemptionReclaimReviewInvalid
+			}
+			update := tx.Model(&Redemption{}).
+				Where("id = ? AND reclaim_status = ?", redemption.Id, RedemptionReclaimStatusManualReview).
+				Updates(map[string]any{
+					"reclaim_status":          RedemptionReclaimStatusCompleted,
+					"reclaim_remaining_quota": 0,
+					"reclaimed_quota":         0,
+					"reclaimed_time":          now,
+					"reclaim_error":           "",
+					"reclaim_reviewed_by":     reviewerId,
+					"reclaim_reviewed_time":   now,
+					"reclaim_review_note":     note,
+				})
+			if update.Error != nil {
+				return update.Error
+			}
+			if update.RowsAffected != 1 {
+				return ErrRedemptionReclaimPreviewConflict
+			}
+			result.UpdatedCount = 1
+			result.CompletedCount = 1
+			result.RedemptionIds = []int{redemption.Id}
+			return nil
+		}
+
+		if _, err := lockUserForRedemptionReviewTx(tx, target.UsedUserId); err != nil {
+			return err
+		}
+		redemption := Redemption{}
+		if err := lockForUpdate(tx).Where("id = ?", redemptionId).First(&redemption).Error; err != nil {
+			return err
+		}
+		if redemption.ReclaimStatus != RedemptionReclaimStatusManualReview {
+			return ErrRedemptionReclaimNotManualReview
+		}
+		if redemption.UsedUserId != target.UsedUserId || redemption.Quota <= 0 ||
+			redemption.Quota > common.MaxWalletQuota || redemption.ExpiredTime <= 0 ||
+			redemption.ReclaimedQuota != 0 {
+			return ErrRedemptionReclaimPreviewConflict
+		}
+		if remainingQuota > redemption.Quota {
+			return ErrRedemptionReclaimReviewInvalid
+		}
+
+		update := tx.Model(&Redemption{}).
+			Where("id = ? AND reclaim_status = ?", redemption.Id, RedemptionReclaimStatusManualReview).
+			Updates(map[string]any{
+				"reclaim_status":          RedemptionReclaimStatusPending,
+				"reclaim_remaining_quota": remainingQuota,
+				"reclaimed_quota":         0,
+				"reclaimed_time":          0,
+				"reclaim_error":           "",
+				"reclaim_reviewed_by":     reviewerId,
+				"reclaim_reviewed_time":   now,
+				"reclaim_review_note":     note,
+			})
+		if update.Error != nil {
+			return update.Error
+		}
+		if update.RowsAffected != 1 {
+			return ErrRedemptionReclaimPreviewConflict
+		}
+		redemption.ReclaimStatus = RedemptionReclaimStatusPending
+		redemption.ReclaimRemainingQuota = remainingQuota
+		redemption.ReclaimedQuota = 0
+		result.RedemptionIds = []int{redemption.Id}
+		result.UpdatedCount = 1
+		if remainingQuota > 0 && redemption.ExpiredTime >= now {
+			result.PendingCount = 1
+			return nil
+		}
+
+		reclaimed, completed, err := settleRedemptionQuotaRowsTx(
+			tx,
+			target.UsedUserId,
+			[]Redemption{redemption},
+			now,
+		)
+		if err != nil {
+			return err
+		}
+		result.ReclaimedQuota = reclaimed
+		result.CompletedCount = completed
+		return nil
+	})
+	if err != nil {
+		return RedemptionReclaimReviewResult{}, err
+	}
+	if result.ReclaimedQuota > 0 {
+		syncUserQuotaCacheDelta(target.UsedUserId, -int64(result.ReclaimedQuota), "manual limited quota reclaim")
 	}
 	return result, nil
 }

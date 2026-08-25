@@ -393,6 +393,293 @@ func TestPreviewHistoricalReclaimUsesWalletFlowMarkers(t *testing.T) {
 	assert.NotEmpty(t, preview.Snapshot)
 }
 
+func TestPreviewHistoricalReclaimAllowsExpiredUsedCodeAndReclaimsRemainder(t *testing.T) {
+	setupRedemptionReclaimFixture(t)
+	now := common.GetTimestamp()
+	user := &User{
+		Username:  "expired-historical-reclaim-user",
+		Password:  "password",
+		Status:    common.UserStatusEnabled,
+		Quota:     60,
+		UsedQuota: 30,
+	}
+	require.NoError(t, DB.Create(user).Error)
+	redemption := &Redemption{
+		Key:          common.GetUUID(),
+		Name:         "expired-historical",
+		Status:       common.RedemptionCodeStatusUsed,
+		Quota:        50,
+		RedeemedTime: now - 100,
+		UsedUserId:   user.Id,
+		ExpiredTime:  now - 10,
+	}
+	require.NoError(t, DB.Create(redemption).Error)
+	require.NoError(t, LOG_DB.Create(&Log{
+		UserId:    user.Id,
+		CreatedAt: now - 50,
+		Type:      LogTypeConsume,
+		Quota:     30,
+		RequestId: "expired-wallet-consume",
+		Other: common.MapToJsonStr(map[string]interface{}{
+			"billing_source": "wallet",
+		}),
+	}).Error)
+
+	preview, err := PreviewRedemptionReclaims([]string{redemption.Key}, now)
+	require.NoError(t, err)
+	require.Len(t, preview.Items, 1)
+	assert.Equal(t, RedemptionReclaimPreviewEligible, preview.Items[0].Result)
+	assert.Equal(t, 20, preview.Items[0].RemainingQuota)
+
+	result, err := EnableRedemptionReclaims([]string{redemption.Key}, preview.Snapshot, now)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.EnabledCount)
+
+	reclaimed, processed, err := SettleExpiredRedemptionQuotaForUser(user.Id, now)
+	require.NoError(t, err)
+	assert.Equal(t, 20, reclaimed)
+	assert.Equal(t, 1, processed)
+
+	var storedUser User
+	require.NoError(t, DB.First(&storedUser, user.Id).Error)
+	assert.Equal(t, 40, storedUser.Quota)
+	assert.Equal(t, 30, storedUser.UsedQuota)
+
+	var storedRedemption Redemption
+	require.NoError(t, DB.First(&storedRedemption, redemption.Id).Error)
+	assert.Equal(t, RedemptionReclaimStatusCompleted, storedRedemption.ReclaimStatus)
+	assert.Equal(t, 20, storedRedemption.ReclaimedQuota)
+}
+
+func TestRetryManualReviewReconstructsExpiredRemainderAtomically(t *testing.T) {
+	setupRedemptionReclaimFixture(t)
+	now := common.GetTimestamp()
+	user := &User{
+		Username:  "retry-manual-review-user",
+		Password:  "password",
+		Status:    common.UserStatusEnabled,
+		Quota:     60,
+		UsedQuota: 30,
+	}
+	require.NoError(t, DB.Create(user).Error)
+	redemption := &Redemption{
+		Key:                   common.GetUUID(),
+		Name:                  "retry-manual-review",
+		Status:                common.RedemptionCodeStatusUsed,
+		Quota:                 50,
+		RedeemedTime:          now - 100,
+		UsedUserId:            user.Id,
+		ExpiredTime:           now - 10,
+		ReclaimStatus:         RedemptionReclaimStatusManualReview,
+		ReclaimEnabledTime:    now - 20,
+		ReclaimRemainingQuota: 0,
+		ReclaimError:          "historical data could not be verified",
+	}
+	require.NoError(t, DB.Create(redemption).Error)
+	require.NoError(t, LOG_DB.Create(&Log{
+		UserId:    user.Id,
+		CreatedAt: now - 50,
+		Type:      LogTypeConsume,
+		Quota:     30,
+		RequestId: "retry-wallet-consume",
+		Other: common.MapToJsonStr(map[string]interface{}{
+			"billing_source": "wallet",
+		}),
+	}).Error)
+
+	result, err := RetryManualRedemptionReclaims(redemption.Id, 7, now)
+	require.NoError(t, err)
+	assert.Equal(t, user.Id, result.UserId)
+	assert.Equal(t, []int{redemption.Id}, result.RedemptionIds)
+	assert.Equal(t, 1, result.UpdatedCount)
+	assert.Equal(t, 1, result.CompletedCount)
+	assert.Zero(t, result.PendingCount)
+	assert.Equal(t, 20, result.ReclaimedQuota)
+
+	var storedUser User
+	require.NoError(t, DB.First(&storedUser, user.Id).Error)
+	assert.Equal(t, 40, storedUser.Quota)
+	assert.Equal(t, 30, storedUser.UsedQuota)
+
+	var storedRedemption Redemption
+	require.NoError(t, DB.First(&storedRedemption, redemption.Id).Error)
+	assert.Equal(t, RedemptionReclaimStatusCompleted, storedRedemption.ReclaimStatus)
+	assert.Zero(t, storedRedemption.ReclaimRemainingQuota)
+	assert.Equal(t, 20, storedRedemption.ReclaimedQuota)
+	assert.Equal(t, 7, storedRedemption.ReclaimReviewedBy)
+	assert.Equal(t, now, storedRedemption.ReclaimReviewedTime)
+	assert.Empty(t, storedRedemption.ReclaimReviewNote)
+}
+
+func TestResolveManualReviewReclaimsAdminConfirmedRemainderWithoutUsageLog(t *testing.T) {
+	setupRedemptionReclaimFixture(t)
+	now := common.GetTimestamp()
+	user := &User{
+		Username:  "resolve-manual-review-user",
+		Password:  "password",
+		Status:    common.UserStatusEnabled,
+		Quota:     65,
+		UsedQuota: 35,
+	}
+	require.NoError(t, DB.Create(user).Error)
+	redemption := &Redemption{
+		Key:                common.GetUUID(),
+		Name:               "resolve-manual-review",
+		Status:             common.RedemptionCodeStatusUsed,
+		Quota:              50,
+		RedeemedTime:       now - 100,
+		UsedUserId:         user.Id,
+		ExpiredTime:        now - 10,
+		ReclaimStatus:      RedemptionReclaimStatusManualReview,
+		ReclaimEnabledTime: now - 20,
+		ReclaimError:       "wallet history is ambiguous",
+	}
+	require.NoError(t, DB.Create(redemption).Error)
+
+	result, err := ResolveManualRedemptionReclaim(
+		redemption.Id,
+		9,
+		15,
+		"Confirmed against the external billing ledger.",
+		now,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, user.Id, result.UserId)
+	assert.Equal(t, []int{redemption.Id}, result.RedemptionIds)
+	assert.Equal(t, 1, result.UpdatedCount)
+	assert.Equal(t, 1, result.CompletedCount)
+	assert.Equal(t, 15, result.ReclaimedQuota)
+
+	var storedUser User
+	require.NoError(t, DB.First(&storedUser, user.Id).Error)
+	assert.Equal(t, 50, storedUser.Quota)
+	assert.Equal(t, 35, storedUser.UsedQuota)
+
+	var logCount int64
+	require.NoError(t, LOG_DB.Model(&Log{}).Where("user_id = ?", user.Id).Count(&logCount).Error)
+	assert.Zero(t, logCount)
+
+	var storedRedemption Redemption
+	require.NoError(t, DB.First(&storedRedemption, redemption.Id).Error)
+	assert.Equal(t, RedemptionReclaimStatusCompleted, storedRedemption.ReclaimStatus)
+	assert.Equal(t, 15, storedRedemption.ReclaimedQuota)
+	assert.Equal(t, 9, storedRedemption.ReclaimReviewedBy)
+	assert.Equal(t, now, storedRedemption.ReclaimReviewedTime)
+	assert.Equal(t, "Confirmed against the external billing ledger.", storedRedemption.ReclaimReviewNote)
+	assert.Empty(t, storedRedemption.ReclaimError)
+}
+
+func TestResolveManualReviewKeepsFutureRemainderActive(t *testing.T) {
+	setupRedemptionReclaimFixture(t)
+	now := common.GetTimestamp()
+	user := &User{
+		Username: "resolve-future-manual-review-user",
+		Password: "password",
+		Status:   common.UserStatusEnabled,
+		Quota:    70,
+	}
+	require.NoError(t, DB.Create(user).Error)
+	redemption := &Redemption{
+		Key:                common.GetUUID(),
+		Name:               "resolve-future-manual-review",
+		Status:             common.RedemptionCodeStatusUsed,
+		Quota:              50,
+		RedeemedTime:       now - 100,
+		UsedUserId:         user.Id,
+		ExpiredTime:        now + 600,
+		ReclaimStatus:      RedemptionReclaimStatusManualReview,
+		ReclaimEnabledTime: now - 20,
+		ReclaimError:       "wallet history is ambiguous",
+	}
+	require.NoError(t, DB.Create(redemption).Error)
+
+	result, err := ResolveManualRedemptionReclaim(redemption.Id, 9, 25, "Verified remainder.", now)
+	require.NoError(t, err)
+	assert.Equal(t, user.Id, result.UserId)
+	assert.Equal(t, []int{redemption.Id}, result.RedemptionIds)
+	assert.Equal(t, 1, result.PendingCount)
+	assert.Zero(t, result.CompletedCount)
+	assert.Zero(t, result.ReclaimedQuota)
+
+	var storedUser User
+	require.NoError(t, DB.First(&storedUser, user.Id).Error)
+	assert.Equal(t, 70, storedUser.Quota)
+
+	var storedRedemption Redemption
+	require.NoError(t, DB.First(&storedRedemption, redemption.Id).Error)
+	assert.Equal(t, RedemptionReclaimStatusPending, storedRedemption.ReclaimStatus)
+	assert.Equal(t, 25, storedRedemption.ReclaimRemainingQuota)
+	assert.Zero(t, storedRedemption.ReclaimedQuota)
+}
+
+func TestResolveManualReviewWithoutRedeemedUserOnlyAllowsZero(t *testing.T) {
+	setupRedemptionReclaimFixture(t)
+	now := common.GetTimestamp()
+	redemption := &Redemption{
+		Key:                common.GetUUID(),
+		Name:               "missing-redeemed-user",
+		Status:             common.RedemptionCodeStatusUsed,
+		Quota:              50,
+		RedeemedTime:       now - 100,
+		ExpiredTime:        now - 10,
+		ReclaimStatus:      RedemptionReclaimStatusManualReview,
+		ReclaimEnabledTime: now - 20,
+		ReclaimError:       "redemption user is unavailable",
+	}
+	require.NoError(t, DB.Create(redemption).Error)
+
+	_, err := ResolveManualRedemptionReclaim(redemption.Id, 9, 1, "Invalid remainder.", now)
+	require.ErrorIs(t, err, ErrRedemptionReclaimReviewInvalid)
+
+	result, err := ResolveManualRedemptionReclaim(redemption.Id, 9, 0, "Verified missing user record.", now)
+	require.NoError(t, err)
+	assert.Zero(t, result.UserId)
+	assert.Equal(t, []int{redemption.Id}, result.RedemptionIds)
+	assert.Equal(t, 1, result.CompletedCount)
+	assert.Zero(t, result.ReclaimedQuota)
+
+	var stored Redemption
+	require.NoError(t, DB.First(&stored, redemption.Id).Error)
+	assert.Equal(t, RedemptionReclaimStatusCompleted, stored.ReclaimStatus)
+	assert.Equal(t, 9, stored.ReclaimReviewedBy)
+	assert.Equal(t, "Verified missing user record.", stored.ReclaimReviewNote)
+}
+
+func TestResolveManualReviewRejectsInvalidRemainderWithoutMutation(t *testing.T) {
+	setupRedemptionReclaimFixture(t)
+	now := common.GetTimestamp()
+	user := &User{
+		Username: "invalid-manual-review-user",
+		Password: "password",
+		Status:   common.UserStatusEnabled,
+		Quota:    50,
+	}
+	require.NoError(t, DB.Create(user).Error)
+	redemption := &Redemption{
+		Key:                common.GetUUID(),
+		Name:               "invalid-manual-review",
+		Status:             common.RedemptionCodeStatusUsed,
+		Quota:              50,
+		RedeemedTime:       now - 100,
+		UsedUserId:         user.Id,
+		ExpiredTime:        now - 10,
+		ReclaimStatus:      RedemptionReclaimStatusManualReview,
+		ReclaimEnabledTime: now - 20,
+		ReclaimError:       "wallet history is ambiguous",
+	}
+	require.NoError(t, DB.Create(redemption).Error)
+
+	_, err := ResolveManualRedemptionReclaim(redemption.Id, 9, 51, "Invalid amount.", now)
+	require.Error(t, err)
+
+	var storedUser User
+	require.NoError(t, DB.First(&storedUser, user.Id).Error)
+	assert.Equal(t, 50, storedUser.Quota)
+	var storedRedemption Redemption
+	require.NoError(t, DB.First(&storedRedemption, redemption.Id).Error)
+	assert.Equal(t, RedemptionReclaimStatusManualReview, storedRedemption.ReclaimStatus)
+}
+
 func TestEnableRedemptionReclaimRejectsChangedPreview(t *testing.T) {
 	setupRedemptionReclaimFixture(t)
 	now := common.GetTimestamp()

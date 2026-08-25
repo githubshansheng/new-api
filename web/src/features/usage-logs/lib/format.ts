@@ -443,6 +443,12 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'redemption.update': 'Updated a redemption code',
   'redemption.delete': 'Deleted a redemption code',
   'redemption.delete_invalid': 'Deleted invalid redemption codes',
+  'redemption.reclaim.enable':
+    'Enabled limited quota reclaim for {{enabled_count}} redemption codes ({{manual_review_count}} awaiting manual review)',
+  'redemption.reclaim.review_retry':
+    'Retried automatic limited quota review for redemption {{redemption_id}} ({{updated_count}} records updated)',
+  'redemption.reclaim.review_resolve':
+    'Manually resolved limited quota review for redemption {{redemption_id}} with {{remaining_quota}} remaining quota',
   // Prefill groups
   'prefill_group.create': 'Created a prefill group',
   'prefill_group.update': 'Updated a prefill group',

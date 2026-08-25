@@ -438,6 +438,9 @@ type redemptionReclaimMigrationColumns struct {
 	ReclaimEnabledTime    *int64  `gorm:"bigint;not null;default:0"`
 	ReclaimedTime         *int64  `gorm:"bigint;not null;default:0"`
 	ReclaimError          *string `gorm:"type:text"`
+	ReclaimReviewedBy     *int    `gorm:"not null;default:0"`
+	ReclaimReviewedTime   *int64  `gorm:"bigint;not null;default:0"`
+	ReclaimReviewNote     *string `gorm:"type:text"`
 }
 
 func (redemptionReclaimMigrationColumns) TableName() string {
@@ -459,6 +462,9 @@ func prepareRedemptionReclaimMigrations(db *gorm.DB) error {
 		{field: "ReclaimEnabledTime", column: "reclaim_enabled_time", value: int64(0)},
 		{field: "ReclaimedTime", column: "reclaimed_time", value: int64(0)},
 		{field: "ReclaimError", column: "reclaim_error", value: ""},
+		{field: "ReclaimReviewedBy", column: "reclaim_reviewed_by", value: 0},
+		{field: "ReclaimReviewedTime", column: "reclaim_reviewed_time", value: int64(0)},
+		{field: "ReclaimReviewNote", column: "reclaim_review_note", value: ""},
 	}
 	for _, column := range columns {
 		if !db.Migrator().HasColumn(&Redemption{}, column.field) {

@@ -27,6 +27,7 @@ import type {
   RedemptionFormData,
   ReclaimEnableData,
   ReclaimPreviewData,
+  ReclaimReviewData,
 } from './types'
 
 // ============================================================================
@@ -100,7 +101,10 @@ export async function updateRedemptionStatus(
   id: number,
   status: number
 ): Promise<ApiResponse<Redemption>> {
-  const res = await api.put('/api/redemption/?status_only=true', { id, status })
+  const res = await api.put('/api/redemption/?status_only=true', {
+    id,
+    status,
+  })
   return res.data
 }
 
@@ -128,6 +132,27 @@ export async function enableLimitedQuotaReclaim(data: {
   snapshot: string
 }): Promise<ApiResponse<ReclaimEnableData>> {
   const res = await api.post('/api/redemption/reclaim/enable', data, {
+    skipErrorHandler: true,
+    skipBusinessError: true,
+  })
+  return res.data
+}
+
+export async function retryManualLimitedQuotaReclaim(
+  id: number
+): Promise<ApiResponse<ReclaimReviewData>> {
+  const res = await api.post(`/api/redemption/reclaim/${id}/retry`, undefined, {
+    skipErrorHandler: true,
+    skipBusinessError: true,
+  })
+  return res.data
+}
+
+export async function resolveManualLimitedQuotaReclaim(
+  id: number,
+  data: { remaining_quota: number; note: string }
+): Promise<ApiResponse<ReclaimReviewData>> {
+  const res = await api.post(`/api/redemption/reclaim/${id}/resolve`, data, {
     skipErrorHandler: true,
     skipBusinessError: true,
   })

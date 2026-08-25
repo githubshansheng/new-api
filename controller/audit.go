@@ -45,7 +45,10 @@ var auditContentTemplates = map[string]string{
 	"channel.upstream_apply":     "Applied upstream model changes to channel (ID: ${id})",
 	"channel.upstream_apply_all": "Applied upstream model changes to ${count} channels",
 
-	"redemption.create": "Created ${count} redemption codes named ${name} (${quota} each)",
+	"redemption.create":                 "Created ${count} redemption codes named ${name} (${quota} each)",
+	"redemption.reclaim.enable":         "Enabled limited quota reclaim for ${enabled_count} redemption codes (${manual_review_count} awaiting manual review)",
+	"redemption.reclaim.review_retry":   "Retried automatic limited quota review for redemption ${redemption_id} (${updated_count} records updated)",
+	"redemption.reclaim.review_resolve": "Manually resolved limited quota review for redemption ${redemption_id} with ${remaining_quota} remaining quota",
 
 	"subscription.plan_reset":      "Reset active subscriptions for plan ${plan_id}",
 	"subscription.user_plan_reset": "Reset active plan ${plan_id} subscriptions for user ${target_user_id}",

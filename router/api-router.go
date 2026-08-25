@@ -307,6 +307,17 @@ func SetApiRouter(router *gin.Engine) {
 				middleware.RequestBodyLimit(redemptionReclaimRequestBodyLimitBytes),
 				controller.EnableRedemptionReclaim,
 			)
+			redemptionRoute.POST(
+				"/reclaim/:id/retry",
+				middleware.UserCriticalRateLimit("redemption-reclaim-review"),
+				controller.RetryManualRedemptionReclaim,
+			)
+			redemptionRoute.POST(
+				"/reclaim/:id/resolve",
+				middleware.UserCriticalRateLimit("redemption-reclaim-review"),
+				middleware.RequestBodyLimit(redemptionReclaimRequestBodyLimitBytes),
+				controller.ResolveManualRedemptionReclaim,
+			)
 			redemptionRoute.GET("/reclaim/stats", controller.GetRedemptionReclaimStats)
 			redemptionRoute.GET("/:id", controller.GetRedemption)
 			redemptionRoute.POST("/", controller.AddRedemption)

@@ -39,6 +39,9 @@ export const redemptionSchema = z.object({
   reclaim_enabled_time: z.number().optional(),
   reclaimed_time: z.number().optional(),
   reclaim_error: z.string().optional(),
+  reclaim_reviewed_by: z.number().optional(),
+  reclaim_reviewed_time: z.number().optional(),
+  reclaim_review_note: z.string().optional(),
 })
 
 export type Redemption = z.infer<typeof redemptionSchema>
@@ -129,6 +132,15 @@ export interface ReclaimEnableData {
   enabled_count: number
   manual_review_count: number
   skipped_count: number
+}
+
+export interface ReclaimReviewData {
+  user_id: number
+  redemption_ids: number[]
+  updated_count: number
+  pending_count: number
+  completed_count: number
+  reclaimed_quota: number
 }
 
 // ============================================================================

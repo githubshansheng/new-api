@@ -43,6 +43,7 @@ export function RedemptionsDialogs() {
         open={open === 'view'}
         onOpenChange={(isOpen) => !isOpen && setOpen(null)}
         redemption={currentRow}
+        onUpdated={triggerRefresh}
       />
     </>
   )

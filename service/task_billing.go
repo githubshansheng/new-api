@@ -127,13 +127,16 @@ func taskAdjustFunding(task *model.Task, delta int) error {
 		if err != nil {
 			return err
 		}
+		if task.PrivateData.WalletQuotaAllocation == nil {
+			task.PrivateData.WalletQuotaAllocation = &model.WalletQuotaAllocation{}
+		}
 		task.PrivateData.WalletQuotaAllocation.Append(allocation)
 		return nil
 	}
 	return model.RefundUserQuotaWithTimedAllocation(
 		task.UserId,
 		-delta,
-		&task.PrivateData.WalletQuotaAllocation,
+		task.PrivateData.WalletQuotaAllocation,
 	)
 }
 

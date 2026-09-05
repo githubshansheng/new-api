@@ -622,7 +622,7 @@ func executeTaskSubmissionWith(
 	task.PrivateData.TokenId = relayInfo.TokenId
 	task.PrivateData.NodeName = common.NodeName
 	if billingSession, ok := relayInfo.Billing.(*service.BillingSession); ok {
-		task.PrivateData.WalletQuotaAllocation = billingSession.GetWalletQuotaAllocation()
+		task.PrivateData.SetWalletQuotaAllocation(billingSession.GetWalletQuotaAllocation())
 	}
 	task.PrivateData.BillingContext = &model.TaskBillingContext{
 		ModelPrice:      relayInfo.PriceData.ModelPrice,
@@ -700,7 +700,7 @@ func executeTaskSubmissionWith(
 		// Settlement can shrink the timed-quota attribution created during
 		// reserve. Persist the final snapshot so later task refunds cannot
 		// restore an allocation that settlement already consumed.
-		task.PrivateData.WalletQuotaAllocation = billingSession.GetWalletQuotaAllocation()
+		task.PrivateData.SetWalletQuotaAllocation(billingSession.GetWalletQuotaAllocation())
 		allocationPersistErr = task.UpdateQuotaAndPrivateData()
 		if allocationPersistErr != nil {
 			common.SysError("persist settled task wallet allocation error: " + allocationPersistErr.Error())

@@ -379,6 +379,26 @@ func runResetOnFirstStreamServer(ln net.Listener, expectRetry bool) <-chan h2Ser
 					return
 				}
 				if !expectRetry {
+					// Keep the TCP connection alive until the client has processed
+					// the reset. Closing immediately after RST_STREAM can surface as
+					// a TCP reset on Windows and hide the HTTP/2 retry error that
+					// this test is intended to assert.
+					pingData := [8]byte{'r', 's', 't', '-', 's', 'y', 'n', 'c'}
+					if err := framer.WritePing(false, pingData); err != nil {
+						res.err = err
+						return
+					}
+					for {
+						frame, err := framer.ReadFrame()
+						if err != nil {
+							res.err = err
+							return
+						}
+						ping, ok := frame.(*http2.PingFrame)
+						if ok && ping.IsAck() && ping.Data == pingData {
+							break
+						}
+					}
 					break attempts
 				}
 				continue
@@ -405,9 +425,9 @@ func runGoAwayAfterFirstRequestServer(ln net.Listener) <-chan h2ServerResult {
 				res.err = err
 				return
 			}
+			defer conn.Close()
 			streamID, body, err := readH2TestRequest(framer)
 			if err != nil {
-				conn.Close()
 				res.err = err
 				return
 			}
@@ -416,7 +436,6 @@ func runGoAwayAfterFirstRequestServer(ln net.Listener) <-chan h2ServerResult {
 
 			if attempt == 0 {
 				err = framer.WriteGoAway(0, http2.ErrCodeNo, nil)
-				conn.Close()
 				if err != nil {
 					res.err = err
 					return
@@ -425,7 +444,6 @@ func runGoAwayAfterFirstRequestServer(ln net.Listener) <-chan h2ServerResult {
 			}
 
 			err = writeH2TestResponse(framer, streamID)
-			conn.Close()
 			if err != nil {
 				res.err = err
 			}

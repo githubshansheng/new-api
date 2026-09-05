@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { describe, expect, test } from 'vitest'
 
 import {
   parsePaymentAmountMinor,
@@ -13,59 +12,54 @@ import {
 
 describe('Liandong payment amount helpers', () => {
   test('converts valid decimal strings to integer minor units', () => {
-    assert.equal(parsePaymentAmountMinor('0.01'), 1)
-    assert.equal(parsePaymentAmountMinor('1.2'), 120)
-    assert.equal(parsePaymentAmountMinor('1.23'), 123)
+    expect(parsePaymentAmountMinor('0.01')).toBe(1)
+    expect(parsePaymentAmountMinor('1.2')).toBe(120)
+    expect(parsePaymentAmountMinor('1.23')).toBe(123)
   })
 
   test('rejects invalid, non-positive, and over-precise amounts', () => {
-    assert.equal(parsePaymentAmountMinor('1.234'), null)
-    assert.equal(parsePaymentAmountMinor('0'), null)
-    assert.equal(parsePaymentAmountMinor('-1'), null)
-    assert.equal(parsePaymentAmountMinor('invalid'), null)
+    expect(parsePaymentAmountMinor('1.234')).toBeNull()
+    expect(parsePaymentAmountMinor('0')).toBeNull()
+    expect(parsePaymentAmountMinor('-1')).toBeNull()
+    expect(parsePaymentAmountMinor('invalid')).toBeNull()
   })
 
   test('formats integer minor units without unnecessary trailing zeroes', () => {
-    assert.equal(paymentAmountInputFromMinor(1), '0.01')
-    assert.equal(paymentAmountInputFromMinor(120), '1.2')
-    assert.equal(paymentAmountInputFromMinor(123), '1.23')
+    expect(paymentAmountInputFromMinor(1)).toBe('0.01')
+    expect(paymentAmountInputFromMinor(120)).toBe('1.2')
+    expect(paymentAmountInputFromMinor(123)).toBe('1.23')
   })
 })
 
 describe('Liandong effective quota helpers', () => {
   test('divides the base USD quota by the target group ratio', () => {
-    assert.equal(
-      calculateLiandongEffectiveQuotaUSD(100_000_000, 0.25, 500_000),
-      800
-    )
+    expect(
+      calculateLiandongEffectiveQuotaUSD(100_000_000, 0.25, 500_000)
+    ).toBe(800)
   })
 
   test('formats the base quota as fixed CNY independently of display currency', () => {
-    assert.equal(
-      formatLiandongEffectiveQuota(100_000_000, 0.25, 500_000, '官方'),
-      '≈官方$800（￥200）'
-    )
-    assert.equal(
-      formatLiandongEffectiveQuota(100_000_000, 1, 500_000, '官方'),
-      '≈官方$200（￥200）'
-    )
+    expect(
+      formatLiandongEffectiveQuota(100_000_000, 0.25, 500_000, '官方')
+    ).toBe('≈官方$800（￥200）')
+    expect(
+      formatLiandongEffectiveQuota(100_000_000, 1, 500_000, '官方')
+    ).toBe('≈官方$200（￥200）')
   })
 
   test('rounds the calculated official quota to an integer', () => {
-    assert.equal(
-      formatLiandongEffectiveQuota(100_000_000, 0.35, 500_000, '官方'),
-      '≈官方$571（￥200）'
-    )
+    expect(
+      formatLiandongEffectiveQuota(100_000_000, 0.35, 500_000, '官方')
+    ).toBe('≈官方$571（￥200）')
   })
 
   test('rejects zero ratios and invalid quota units', () => {
-    assert.equal(calculateLiandongEffectiveQuotaUSD(100, 0, 500_000), null)
-    assert.equal(calculateLiandongEffectiveQuotaUSD(100, 1, 0), null)
+    expect(calculateLiandongEffectiveQuotaUSD(100, 0, 500_000)).toBeNull()
+    expect(calculateLiandongEffectiveQuotaUSD(100, 1, 0)).toBeNull()
   })
 
   test('formats Chinese group ratios with the requested decimal comma', () => {
-    assert.equal(
-      formatLiandongGroupRatio('vip', 0.25, '倍率', 'zhCN'),
+    expect(formatLiandongGroupRatio('vip', 0.25, '倍率', 'zhCN')).toBe(
       'vip(倍率0,25)'
     )
   })

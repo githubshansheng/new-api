@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -29,7 +30,7 @@ func setupRedemptionReclaimControllerTestDB(t *testing.T) *gorm.DB {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Redemption{}, &model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Redemption{}, &model.Log{}, &model.AuditLog{}))
 	model.DB, model.LOG_DB = db, db
 	common.RedisEnabled = false
 	common.LogConsumeEnabled = true
@@ -156,19 +157,20 @@ func TestResolveManualRedemptionReclaimAPISettlesAndAudits(t *testing.T) {
 	require.NoError(t, db.Model(&model.Log{}).Where("type = ?", model.LogTypeConsume).Count(&consumeLogs).Error)
 	assert.Zero(t, consumeLogs)
 
-	var audit model.Log
-	require.NoError(t, db.Where("type = ?", model.LogTypeManage).First(&audit).Error)
+	var audit model.AuditLog
+	require.NoError(t, db.Where("action = ?", "redemption.reclaim.review_resolve").First(&audit).Error)
 	assert.Equal(t, admin.Id, audit.UserId)
-	var other map[string]any
-	require.NoError(t, common.UnmarshalJsonStr(audit.Other, &other))
-	op, ok := other["op"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "redemption.reclaim.review_resolve", op["action"])
-	params, ok := op["params"].(map[string]any)
-	require.True(t, ok)
-	assert.EqualValues(t, target.Id, params["target_user_id"])
-	assert.Equal(t, logger.LogQuota(20), params["remaining_quota"])
-	assert.Equal(t, "Verified against the wallet ledger.", params["review_note"])
+	require.NotNil(t, audit.Other.Op)
+	assert.Equal(t, "redemption.reclaim.review_resolve", audit.Other.Op.Action)
+	var targetUserId int
+	require.NoError(t, common.Unmarshal(audit.Other.Op.Params["target_user_id"].(json.RawMessage), &targetUserId))
+	assert.Equal(t, target.Id, targetUserId)
+	var remainingQuota string
+	require.NoError(t, common.Unmarshal(audit.Other.Op.Params["remaining_quota"].(json.RawMessage), &remainingQuota))
+	assert.Equal(t, logger.LogQuota(20), remainingQuota)
+	var reviewNote string
+	require.NoError(t, common.Unmarshal(audit.Other.Op.Params["review_note"].(json.RawMessage), &reviewNote))
+	assert.Equal(t, "Verified against the wallet ledger.", reviewNote)
 }
 
 func TestRedemptionReclaimReviewAPIErrorsUseActionableStatuses(t *testing.T) {

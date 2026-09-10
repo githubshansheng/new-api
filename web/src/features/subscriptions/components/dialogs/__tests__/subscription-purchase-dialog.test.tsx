@@ -16,7 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
+import type { ReactElement } from 'react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
@@ -37,6 +39,15 @@ vi.mock('../../../api', () => ({
   paySubscriptionWaffoPancake: vi.fn(),
   paySubscriptionBalance: vi.fn(),
 }))
+
+function renderDialog(ui: ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return render(
+    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
+  )
+}
 
 const balancePayMock = vi.mocked(paySubscriptionBalance)
 const plan: PlanRecord = {
@@ -67,7 +78,7 @@ describe('SubscriptionPurchaseDialog', () => {
   })
 
   test('excludes limited quota from balance payment while leaving external payment enabled', () => {
-    render(
+    renderDialog(
       <SubscriptionPurchaseDialog
         open
         onOpenChange={() => undefined}
@@ -94,7 +105,7 @@ describe('SubscriptionPurchaseDialog', () => {
     const user = userEvent.setup()
     const onOpenChange = vi.fn()
     const onBalanceRefresh = vi.fn()
-    render(
+    renderDialog(
       <SubscriptionPurchaseDialog
         open
         onOpenChange={onOpenChange}
@@ -115,7 +126,7 @@ describe('SubscriptionPurchaseDialog', () => {
   })
 
   test('shows negative wallet and regular balances without clamping them to zero', () => {
-    render(
+    renderDialog(
       <SubscriptionPurchaseDialog
         open
         onOpenChange={() => undefined}

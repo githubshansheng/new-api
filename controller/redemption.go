@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"unicode/utf8"
@@ -179,7 +180,7 @@ func UpdateRedemption(c *gin.Context) {
 		cleanRedemption, err = model.UpdateRedemptionStatusForAdmin(redemption.Id, redemption.Status)
 	} else {
 		if utf8.RuneCountInString(redemption.Name) == 0 || utf8.RuneCountInString(redemption.Name) > 20 {
-			common.ApiErrorI18n(c, i18n.MsgRedemptionNameLength)
+			common.ApiErrorT(c, "Redemption name must be 1 to 20 characters")
 			return
 		}
 		if redemption.Quota <= 0 {
@@ -198,8 +199,8 @@ func UpdateRedemption(c *gin.Context) {
 		}
 		if current.ReclaimStatus == model.RedemptionReclaimStatusDisabled ||
 			current.ExpiredTime != redemption.ExpiredTime {
-			if valid, msg := validateExpiredTime(c, redemption.ExpiredTime); !valid {
-				c.JSON(http.StatusOK, gin.H{"success": false, "message": msg})
+			if err := validateExpiredTime(redemption.ExpiredTime); err != nil {
+				common.ApiError(c, err)
 				return
 			}
 		}

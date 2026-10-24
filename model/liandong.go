@@ -1795,11 +1795,11 @@ func FulfillLiandongOrder(localTradeNo string) (*LiandongFulfillmentResult, erro
 		}
 		RecordTopupLog(
 			result.UserID,
-			fmt.Sprintf(
-				"链动卡网充值成功，充值额度: %v，支付金额: %.2f",
-				logger.FormatQuota(int(result.QuotaAdded)),
-				result.Money,
-			),
+			common.NewMessage("{{provider}} top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}", map[string]any{
+				"provider": "Liandong",
+				"quota":    logger.FormatQuota(int(result.QuotaAdded)),
+				"amount":   fmt.Sprintf("%.2f", result.Money),
+			}),
 			"",
 			PaymentMethodLiandong,
 			PaymentProviderLiandong,
@@ -1814,7 +1814,11 @@ func FulfillLiandongOrder(localTradeNo string) (*LiandongFulfillmentResult, erro
 		RecordLog(
 			result.UserID,
 			LogTypeTopup,
-			fmt.Sprintf("链动卡网订阅购买成功，商品: %s，支付金额: %.2f", result.ProductName, result.Money),
+			common.NewMessage("{{provider}} subscription purchase succeeded, product: {{product}}, payment amount: {{amount}}", map[string]any{
+				"provider": "Liandong",
+				"product":  result.ProductName,
+				"amount":   fmt.Sprintf("%.2f", result.Money),
+			}),
 		)
 	}
 	return result, nil

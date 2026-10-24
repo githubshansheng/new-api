@@ -279,7 +279,7 @@ func runSystemTaskScheduler() time.Duration {
 	latestTasks, err := model.GetLatestSystemTasks(taskTypes)
 	if err != nil {
 		logger.LogWarn(context.Background(), common.LogText("system task scheduler query failed: %v", err))
-		return
+		return nextDelay
 	}
 	for _, scheduled := range scheduledHandlers {
 		interval := scheduled.Interval()

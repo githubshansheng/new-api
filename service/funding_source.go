@@ -44,7 +44,7 @@ func (w *WalletFunding) PreConsume(amount int) error {
 	if amount <= 0 {
 		return nil
 	}
-	allocation, reserved, err := model.ReserveUserQuotaWithTimedAllocation(w.userId, amount)
+	_, reserved, err := model.ReserveUserQuotaWithTimedAllocation(w.userId, amount)
 	if err != nil {
 		return err
 	}

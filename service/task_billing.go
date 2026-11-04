@@ -166,6 +166,11 @@ func taskBillingOther(task *model.Task) *model.LogOther {
 	other := model.NewLogOther()
 	// 前端列表按 is_task 选择任务档位渲染分支,缺失会把差额/退款日志误判成普通 relay 动态计费
 	other.SetPublic("is_task", true)
+	if taskIsSubscription(task) {
+		other.SetPublic("billing_source", BillingSourceSubscription)
+	} else {
+		other.SetPublic("billing_source", BillingSourceWallet)
+	}
 	if bc := task.PrivateData.BillingContext; bc != nil {
 		other.SetPublic("model_price", bc.ModelPrice)
 		if bc.ModelRatio > 0 {

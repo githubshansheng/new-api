@@ -39,38 +39,56 @@ func GetCurrentLogPath() string {
 	return currentLogPath
 }
 
+// ResetOutput closes the active file sink and restores Gin's standard writers.
+// It is intended for tests that temporarily direct logs into a removable directory.
+func ResetOutput() {
+	currentLogPathMu.Lock()
+	oldFile := currentLogFile
+	currentLogFile, currentLogPath = nil, ""
+	currentLogPathMu.Unlock()
+	common.LogWriterMu.Lock()
+	gin.DefaultWriter, gin.DefaultErrorWriter = os.Stdout, os.Stderr
+	common.LogWriterMu.Unlock()
+	if oldFile != nil {
+		_ = oldFile.Close()
+	}
+}
+
 func SetupLogger() {
 	defer func() {
 		setupLogWorking = false
 	}()
-	if *common.LogDir != "" {
-		ok := setupLogLock.TryLock()
-		if !ok {
-			log.Println(common.LogText("setup log is already working"))
-			return
-		}
-		defer func() {
-			setupLogLock.Unlock()
-		}()
-		logPath := filepath.Join(*common.LogDir, fmt.Sprintf("oneapi-%s.log", time.Now().Format("20060102150405")))
-		fd, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			log.Fatal(common.LogText("failed to open log file"))
-		}
-		currentLogPathMu.Lock()
-		oldFile := currentLogFile
-		currentLogPath = logPath
-		currentLogFile = fd
-		currentLogPathMu.Unlock()
-
-		common.LogWriterMu.Lock()
-		gin.DefaultWriter = io.MultiWriter(os.Stdout, fd)
-		gin.DefaultErrorWriter = io.MultiWriter(os.Stderr, fd)
-		if oldFile != nil {
-			_ = oldFile.Close()
-		}
-		common.LogWriterMu.Unlock()
+	if *common.LogDir == "" {
+		ResetOutput()
+		return
 	}
+
+	ok := setupLogLock.TryLock()
+	if !ok {
+		log.Println(common.LogText("setup log is already working"))
+		return
+	}
+	defer func() {
+		setupLogLock.Unlock()
+	}()
+	logPath := filepath.Join(*common.LogDir, fmt.Sprintf("oneapi-%s.log", time.Now().Format("20060102150405")))
+	fd, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(common.LogText("failed to open log file"))
+	}
+	currentLogPathMu.Lock()
+	oldFile := currentLogFile
+	currentLogPath = logPath
+	currentLogFile = fd
+	currentLogPathMu.Unlock()
+
+	common.LogWriterMu.Lock()
+	gin.DefaultWriter = io.MultiWriter(os.Stdout, fd)
+	gin.DefaultErrorWriter = io.MultiWriter(os.Stderr, fd)
+	if oldFile != nil {
+		_ = oldFile.Close()
+	}
+	common.LogWriterMu.Unlock()
 }
 
 func LogInfo(ctx context.Context, msg string) {

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -46,6 +47,7 @@ func TestLiandongUserRoutesRequireAuthenticationAndManagementRequiresRoot(t *tes
 		&model.LiandongProductThumbnail{},
 		&model.LiandongOrder{},
 	))
+	require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(time.Now().Unix()))
 	t.Cleanup(func() {
 		sqlDB, dbErr := db.DB()
 		if dbErr == nil {

@@ -834,6 +834,9 @@ func newAuditTestDatabase(t *testing.T, kind, dsn string) (*gorm.DB, string) {
 		path := t.TempDir() + "/audit.db"
 		db, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
 		require.NoError(t, err)
+		sqlDB, err := db.DB()
+		require.NoError(t, err)
+		t.Cleanup(func() { assert.NoError(t, sqlDB.Close()) })
 		return db, path
 	}
 	require.NotEmpty(t, dsn)
@@ -983,6 +986,11 @@ func verifyAuditJSONStorage(t *testing.T) {
 	assert.JSONEq(t, `{}`, string(empty))
 	for range 2 {
 		require.NoError(t, model.InitLogDB())
+		if model.LOG_DB != model.DB {
+			sqlDB, err := model.LOG_DB.DB()
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, sqlDB.Close()) })
+		}
 	}
 	entries, total, err = model.GetAuditLogs(filter, 0, 20, common.RoleRootUser)
 	require.NoError(t, err)
@@ -1076,6 +1084,9 @@ func TestAuditDatabaseMatrix(t *testing.T) {
 					}
 					for range 2 {
 						require.NoError(t, model.InitDB())
+						sqlDB, err := model.DB.DB()
+						require.NoError(t, err)
+						t.Cleanup(func() { assert.NoError(t, sqlDB.Close()) })
 						require.NoError(t, model.InitLogDB())
 					}
 					if !upgrade {
@@ -1188,8 +1199,12 @@ func TestIndependentAuditLogStores(t *testing.T) {
 				}
 				t.Setenv("LOG_SQL_DSN", isolatedDSN)
 				t.Setenv("LOG_SQL_CLICKHOUSE_TTL_DAYS", "7")
-				require.NoError(t, model.InitLogDB())
-				require.NoError(t, model.InitLogDB())
+				for range 2 {
+					require.NoError(t, model.InitLogDB())
+					sqlDB, err := model.LOG_DB.DB()
+					require.NoError(t, err)
+					t.Cleanup(func() { assert.NoError(t, sqlDB.Close()) })
+				}
 				if upgrade {
 					var old model.Log
 					require.NoError(t, model.LOG_DB.Where("request_id = ?", "legacy-split-request").Take(&old).Error)

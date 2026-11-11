@@ -65,11 +65,17 @@ func TestAccessAndPanicLogsFollowLogRotation(t *testing.T) {
 	previousLogDir := *common.LogDir
 	gin.SetMode(gin.TestMode)
 	*common.LogDir = t.TempDir()
+	logger.SetupLogger()
+
+	// Capture the log in a second directory so the router's rotation can close
+	// this temporary handle before the directory is removed.
 	t.Cleanup(func() {
 		gin.SetMode(previousMode)
-		gin.DefaultWriter, gin.DefaultErrorWriter = previousWriter, previousErrorWriter
+		logger.ResetOutput()
 		*common.LogDir = previousLogDir
+		gin.DefaultWriter, gin.DefaultErrorWriter = previousWriter, previousErrorWriter
 	})
+	*common.LogDir = t.TempDir()
 
 	logger.SetupLogger()
 	router := gin.New()

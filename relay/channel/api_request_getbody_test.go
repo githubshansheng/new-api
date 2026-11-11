@@ -419,36 +419,53 @@ func runGoAwayAfterFirstRequestServer(ln net.Listener) <-chan h2ServerResult {
 		res := h2ServerResult{}
 		defer func() { resCh <- res }()
 
-		for attempt := range 2 {
-			conn, framer, err := acceptH2TestConnection(ln)
-			if err != nil {
-				res.err = err
-				return
-			}
-			defer conn.Close()
-			streamID, body, err := readH2TestRequest(framer)
-			if err != nil {
-				res.err = err
-				return
-			}
-			res.streamCount++
-			res.attemptBodies = append(res.attemptBodies, body)
-
-			if attempt == 0 {
-				err = framer.WriteGoAway(0, http2.ErrCodeNo, nil)
-				if err != nil {
-					res.err = err
-					return
-				}
-				continue
-			}
-
-			err = writeH2TestResponse(framer, streamID)
-			if err != nil {
-				res.err = err
-			}
+		firstConn, firstFramer, err := acceptH2TestConnection(ln)
+		if err != nil {
+			res.err = err
 			return
 		}
+		streamID, body, err := readH2TestRequest(firstFramer)
+		if err != nil {
+			_ = firstConn.Close()
+			res.err = err
+			return
+		}
+		res.streamCount++
+		res.attemptBodies = append(res.attemptBodies, body)
+		if err := firstFramer.WriteGoAway(0, http2.ErrCodeNo, nil); err != nil {
+			_ = firstConn.Close()
+			res.err = err
+			return
+		}
+
+		conn, framer, err := acceptH2TestConnection(ln)
+		if err != nil {
+			_ = firstConn.Close()
+			res.err = err
+			return
+		}
+		defer conn.Close()
+		streamID, body, err = readH2TestRequest(framer)
+		if err != nil {
+			_ = firstConn.Close()
+			res.err = err
+			return
+		}
+		res.streamCount++
+		res.attemptBodies = append(res.attemptBodies, body)
+		if err := writeH2TestResponse(framer, streamID); err != nil {
+			res.err = err
+		}
+		// Wait for the transport to finish with the response before closing
+		// either socket. Closing immediately can surface as a reset on Windows
+		// before the client has consumed the 200 response.
+		_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		for {
+			if _, err := framer.ReadFrame(); err != nil {
+				break
+			}
+		}
+		_ = firstConn.Close()
 	}()
 	return resCh
 }

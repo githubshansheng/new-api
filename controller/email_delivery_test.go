@@ -239,8 +239,17 @@ func TestEmailKeyStatusIsDerivedAndReadOnly(t *testing.T) {
 	context, _ := gin.CreateTestContext(response)
 	context.Request = httptest.NewRequest(http.MethodGet, "/api/option/", nil)
 	GetOptions(context)
-	assert.Contains(t, response.Body.String(), `"key":"ResendKeyConfigured","value":"false"`)
-	assert.NotContains(t, response.Body.String(), `"value":"true"`)
+	var body struct {
+		Data []model.Option `json:"data"`
+	}
+	require.NoError(t, common.UnmarshalJsonStr(response.Body.String(), &body))
+	statusValues := make([]string, 0, 1)
+	for _, option := range body.Data {
+		if option.Key == "ResendKeyConfigured" {
+			statusValues = append(statusValues, option.Value)
+		}
+	}
+	assert.Equal(t, []string{"false"}, statusValues)
 
 	response = httptest.NewRecorder()
 	context, _ = gin.CreateTestContext(response)

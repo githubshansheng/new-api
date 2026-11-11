@@ -67,6 +67,8 @@ func (b *nativeRouteBilling) GetPreConsumedQuota() int {
 func (b *nativeRouteBilling) Reserve(quota int) error {
 	b.events = append(b.events, "reserve")
 	if b.reserveErr != nil {
+		// Settlement still charges the delivered usage after a failed top-up.
+		b.preConsumed = 0
 		return b.reserveErr
 	}
 	if err := model.DecreaseUserQuota(b.userID, quota, true); err != nil {
@@ -286,7 +288,7 @@ func TestDoubaoRelayedImageStreamSettlement(t *testing.T) {
 	previousDeadline := constant.TaskPluginProtocolTimeoutSeconds
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(&model.User{}, &model.Channel{}, &model.Task{}, &model.Log{}))
+	require.NoError(t, database.AutoMigrate(&model.User{}, &model.Channel{}, &model.Task{}, &model.Log{}, &model.Redemption{}))
 	model.DB = database
 	model.LOG_DB = database
 	common.MemoryCacheEnabled = false

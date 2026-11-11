@@ -31,11 +31,19 @@ func listModelsMeta(c *gin.Context, keyword, vendor string) {
 		return
 	}
 
-	pageInfo := common.GetPageQuery(c)
-	if squareState != "" && (pageInfo.GetPage() < 1 || pageInfo.GetPageSize() < 1) {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid pagination"})
-		return
+	for _, query := range []string{"p", "page_size"} {
+		rawValue := c.Query(query)
+		if rawValue == "" {
+			continue
+		}
+		value, err := strconv.Atoi(rawValue)
+		if err == nil && value < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid pagination"})
+			return
+		}
 	}
+
+	pageInfo := common.GetPageQuery(c)
 	offset, limit := pageInfo.GetStartIdx(), pageInfo.GetPageSize()
 	if squareState != "" {
 		// Visibility depends on live channels and metadata rules. Filter the

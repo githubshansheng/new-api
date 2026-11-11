@@ -70,6 +70,9 @@ var accessTokenExemptRoutes = []string{
 	// API key authentication (TokenAuthReadOnly).
 	"GET /api/usage/token/",
 	"GET /api/log/token",
+
+	// Public storefront metadata and image, served before payment auth.
+	"GET /api/payment/liandong/products/:id/thumbnail",
 }
 
 // accessTokenHelperRoutes are declared through handlePermissionRoute outside

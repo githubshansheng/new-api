@@ -21,6 +21,22 @@ type MigrationIdentityFields struct {
 	Subject   string `gorm:"size:64;uniqueIndex:,composite:provider_subject"`
 }
 
+// The released rc.49 task schema, before the composite type/id index.
+type migrationSystemTaskRC49 struct {
+	ID        int64            `gorm:"primary_key"`
+	TaskID    string           `gorm:"type:varchar(64);uniqueIndex"`
+	Type      string           `gorm:"type:varchar(64);index"`
+	Status    SystemTaskStatus `gorm:"type:varchar(32);index"`
+	ActiveKey *string          `gorm:"type:varchar(64);uniqueIndex"`
+	Payload   string           `gorm:"type:text"`
+	State     string           `gorm:"type:text"`
+	Result    string           `gorm:"type:text"`
+	Error     string           `gorm:"type:text"`
+	LockedBy  string           `gorm:"type:varchar(128);index"`
+	CreatedAt int64            `gorm:"bigint;index"`
+	UpdatedAt int64            `gorm:"bigint;index"`
+}
+
 type migrationIdentityV1 struct {
 	MigrationIdentityFields
 	Digest string `gorm:"type:char(32)"`
@@ -83,6 +99,32 @@ func TestMigrationSchemaStability(t *testing.T) {
 			t.Cleanup(func() { _ = sqlDB.Close() })
 			recorder := &migrationSQLRecorder{}
 			db = db.Session(&gorm.Session{Logger: recorder})
+
+			for _, source := range []string{"fresh", "rc49"} {
+				t.Run("system_tasks_"+source, func(t *testing.T) {
+					const table = "migration_system_task_test"
+					t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(table)) })
+					active := "liandong_reconcile"
+					row := SystemTask{ID: 1, TaskID: "preserved-task", Type: active, Status: SystemTaskStatusPending, ActiveKey: &active, Payload: `{"order":"retained"}`, State: "state", Result: "result", LockedBy: "node-1", CreatedAt: 100, UpdatedAt: 101}
+					if source == "rc49" {
+						require.NoError(t, db.Table(table).AutoMigrate(&migrationSystemTaskRC49{}))
+						require.NoError(t, db.Table(table).Create(&row).Error)
+					}
+					require.NoError(t, db.Table(table).AutoMigrate(&SystemTask{}))
+					if source == "fresh" {
+						require.NoError(t, db.Table(table).Create(&row).Error)
+					}
+					recorder.reset()
+					require.NoError(t, db.Table(table).AutoMigrate(&SystemTask{}))
+					assert.Empty(t, recorder.schemaMutations(), "repeat startup must not alter the task schema")
+					var saved SystemTask
+					require.NoError(t, db.Table(table).First(&saved, row.ID).Error)
+					assert.Equal(t, row, saved)
+					assert.True(t, db.Table(table).Migrator().HasIndex(&SystemTask{}, "idx_migration_system_task_test_type_id"))
+					assert.Error(t, db.Table(table).Create(&SystemTask{TaskID: row.TaskID}).Error)
+					assert.Error(t, db.Table(table).Create(&SystemTask{TaskID: "another-task", ActiveKey: &active}).Error)
+				})
+			}
 
 			t.Run("identity_and_indexes", func(t *testing.T) {
 				const table = "migration_identity_test"

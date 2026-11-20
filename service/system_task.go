@@ -140,6 +140,7 @@ func StartSystemTaskRunner() {
 				}
 				nextDelay := runSystemTaskScheduler()
 				runSystemTaskClaimPass(runnerID)
+				finishAppliedSyncTasks()
 				if nextDelay < systemTaskMinimumDelay {
 					return systemTaskMinimumDelay
 				}

@@ -574,9 +574,13 @@ export function buildQueryRequest(){throw new Error("completed submissions must 
 		name, status string
 		actual       any
 		count        float64
+		disconnect   bool
 	}{
-		{"partial", "SUCCESS", 2, 2}, {"zero", "SUCCESS", 0, 0}, {"larger", "SUCCESS", 6, 6},
-		{"invalid usage", "SUCCESS", -1, 4}, {"expression failure", "SUCCESS", 7, 4}, {"negative result", "SUCCESS", 8, 4}, {"missing usage", "SUCCESS", nil, 4}, {"failed", "FAILURE", 9, 0},
+		{"partial", "SUCCESS", 2, 2, false}, {"zero", "SUCCESS", 0, 0, false}, {"larger", "SUCCESS", 6, 6, false},
+		{"invalid usage", "SUCCESS", -1, 4, false}, {"expression failure", "SUCCESS", 7, 4, false}, {"negative result", "SUCCESS", 8, 4, false}, {"missing usage", "SUCCESS", nil, 4, false}, {"failed", "FAILURE", 9, 0, false},
+		{"stream disconnect partial", "SUCCESS", 2, 2, true},
+		{"stream disconnect larger", "SUCCESS", 6, 6, true},
+		{"stream disconnect failed", "FAILURE", 9, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -615,7 +619,20 @@ export function buildQueryRequest(){throw new Error("completed submissions must 
 			info.UserSetting.BillingPreference = "wallet_only"
 			info.PublicTaskID = model.GenerateTaskID()
 			info.LockedChannel = &ch
-			outcome, taskErr := executeTaskSubmission(c, info)
+			requestContext, cancel := context.WithCancel(c.Request.Context())
+			defer cancel()
+			c.Request = c.Request.WithContext(requestContext)
+			outcome, taskErr := executeTaskSubmissionWith(c, info, func(c *gin.Context, info *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *dto.TaskError) {
+				result, taskErr := relay.RelayTaskSubmit(c, info)
+				if tc.disconnect && taskErr == nil {
+					c.Header("Content-Type", "text/event-stream")
+					_, err := c.Writer.WriteString("data: {}\n\n")
+					require.NoError(t, err)
+					c.Writer.Flush()
+					cancel()
+				}
+				return result, taskErr
+			})
 			require.Nil(t, taskErr)
 			require.NotNil(t, outcome)
 			want := common.QuotaRound(tc.count * 0.01 * common.QuotaPerUnit)
@@ -643,7 +660,10 @@ export function buildQueryRequest(){throw new Error("completed submissions must 
 			if tc.status == "SUCCESS" {
 				assert.Equal(t, tc.count, other["usage_facts"].(map[string]any)["units"])
 			}
-			assert.False(t, c.Writer.Written(), "presentation must follow persistence and settlement")
+			assert.Equal(t, tc.disconnect, c.Writer.Written(), "only the relayed stream writes before settlement")
+			if tc.disconnect {
+				assert.ErrorIs(t, c.Request.Context().Err(), context.Canceled, "finalization must not replace the client context")
+			}
 			require.NoError(t, info.Billing.Settle(want))
 			info.Billing.Refund(c)
 			require.NoError(t, db.First(&updated, user.Id).Error)

@@ -227,7 +227,11 @@ func (liandongPollHandler) Interval() time.Duration {
 	if err != nil {
 		return 30 * time.Second
 	}
-	return time.Duration(settingsSnapshot.PollIntervalSeconds) * time.Second
+	interval := time.Duration(settingsSnapshot.PollIntervalSeconds) * time.Second
+	if backoff := service.LiandongForbiddenBackoffRemaining(); backoff > interval {
+		return backoff
+	}
+	return interval
 }
 
 func (liandongPollHandler) NewPayload() any { return nil }
@@ -235,6 +239,11 @@ func (liandongPollHandler) NewPayload() any { return nil }
 func (liandongPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary, err := service.RunLiandongReconcileOnce(ctx)
 	if err != nil {
+		if service.LiandongForbiddenBackoffRemaining() > 0 {
+			summary["skipped"]++
+			finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+			return
+		}
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, err)
 		return
 	}

@@ -27,6 +27,126 @@ import zh from '@/i18n/locales/zh.json'
 
 import { ModelMappingEditor } from '../model-mapping-editor'
 
+test('maps every request effort to a fixed upstream effort and round-trips through JSON', async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  const view = render(
+    <ModelMappingEditor
+      value='{"gpt-6.2-sol":"gpt-6-astra"}'
+      onChange={onChange}
+    />
+  )
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Mapped reasoning effort' }),
+    'low'
+  )
+  const mapped = JSON.stringify(
+    { 'gpt-6.2-sol': 'gpt-6-astra@effort:low' },
+    null,
+    2
+  )
+  expect(onChange).toHaveBeenLastCalledWith(mapped)
+  view.rerender(<ModelMappingEditor value={mapped} onChange={onChange} />)
+  expect(
+    screen.getByRole('combobox', { name: 'Upstream Model Name' })
+  ).toHaveValue('gpt-6-astra')
+  expect(
+    screen.getByRole('combobox', { name: 'Mapped reasoning effort' })
+  ).toHaveValue('low')
+  await user.click(screen.getByRole('tab', { name: 'JSON' }))
+  expect(screen.getByRole('textbox', { name: 'Model Mapping' })).toHaveValue(
+    '{\n  "gpt-6.2-sol": "gpt-6-astra@effort:low"\n}'
+  )
+  await user.click(screen.getByRole('tab', { name: 'Visual' }))
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Mapped reasoning effort' }),
+    ''
+  )
+  expect(onChange).toHaveBeenLastCalledWith(
+    JSON.stringify({ 'gpt-6.2-sol': 'gpt-6-astra' }, null, 2)
+  )
+})
+
+test('disables mapped effort editing with the rest of the mapping', () => {
+  render(
+    <ModelMappingEditor
+      value='{"alias":"upstream@effort:none"}'
+      onChange={vi.fn()}
+      disabled
+    />
+  )
+  expect(
+    screen.getByRole('combobox', { name: 'Mapped reasoning effort' })
+  ).toBeDisabled()
+  expect(
+    screen.getByRole('combobox', { name: 'Mapped reasoning effort' })
+  ).toHaveValue('none')
+})
+
+test('keeps request input aligned to the top when the target includes effort controls', () => {
+  render(
+    <ModelMappingEditor
+      value='{"alias":"upstream@effort:low"}'
+      onChange={vi.fn()}
+    />
+  )
+  const requestInput = screen.getByRole('combobox', {
+    name: 'Request Model Name',
+  })
+  expect(requestInput.closest('.grid')).toHaveClass('items-start')
+  expect(screen.getByLabelText('Mapped reasoning effort')).toHaveValue('low')
+})
+
+test('updates repeated effort modifiers while preserving other model modifiers', async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  render(
+    <ModelMappingEditor
+      value='{"alias":"upstream@effort:high@temperature:0.2@effort:low@topp:0.8"}'
+      onChange={onChange}
+    />
+  )
+  expect(
+    screen.getByRole('combobox', { name: 'Mapped reasoning effort' })
+  ).toHaveValue('low')
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Mapped reasoning effort' }),
+    'medium'
+  )
+  expect(onChange).toHaveBeenLastCalledWith(
+    JSON.stringify(
+      { alias: 'upstream@temperature:0.2@topp:0.8@effort:medium' },
+      null,
+      2
+    )
+  )
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Mapped reasoning effort' }),
+    ''
+  )
+  expect(onChange).toHaveBeenLastCalledWith(
+    JSON.stringify({ alias: 'upstream@temperature:0.2@topp:0.8' }, null, 2)
+  )
+})
+
+test.each([
+  'provider-high',
+  'vendor/model@sha256:abc',
+  'provider@effort:custom',
+])('preserves opaque upstream model %s when opening the editor', (model) => {
+  const onChange = vi.fn()
+  render(
+    <ModelMappingEditor
+      value={JSON.stringify({ alias: model })}
+      onChange={onChange}
+    />
+  )
+  expect(
+    screen.getByRole('combobox', { name: 'Upstream Model Name' })
+  ).toHaveValue(model)
+  expect(onChange).not.toHaveBeenCalled()
+})
+
 test('external mapping changes update the editor without emitting an edit', () => {
   const onChange = vi.fn()
   const view = render(

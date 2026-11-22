@@ -32,7 +32,15 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { ComboboxInput } from '@/components/ui/combobox-input'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+
+import {
+  MAPPING_REASONING_EFFORTS,
+  mappingTargetWithEffort,
+  splitMappingTarget,
+} from '../lib/model-mapping-rules'
 
 type MappingField = 'from' | 'to'
 
@@ -464,50 +472,91 @@ export function ModelMappingEditor(props: ModelMappingEditorProps) {
                 <div>{t('Upstream Model Name')}</div>
                 <div className='w-10' />
               </div>
-              {visibleRows.map((row) => (
-                <div
-                  key={row.id}
-                  className='grid grid-cols-[1fr_1fr_auto] gap-2'
-                >
-                  <ComboboxInput
-                    id={rowInputId(row.id, 'from')}
-                    options={sourceOptions}
-                    value={row.from}
-                    onValueChange={(value) =>
-                      handleRowChange(row.id, 'from', value)
-                    }
-                    placeholder='gpt-3.5-turbo'
-                    emptyText='No matching items'
-                    allowCustomValue
-                    disabled={props.disabled}
-                    aria-label={t('Request Model Name')}
-                  />
-                  <ComboboxInput
-                    id={rowInputId(row.id, 'to')}
-                    options={targetOptions}
-                    value={row.to}
-                    onValueChange={(value) =>
-                      handleRowChange(row.id, 'to', value)
-                    }
-                    placeholder='gpt-3.5-turbo-0125'
-                    emptyText='No matching items'
-                    allowCustomValue
-                    disabled={props.disabled}
-                    aria-label={t('Upstream Model Name')}
-                  />
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='icon'
-                    onClick={() => handleDeleteRow(row.id)}
-                    disabled={props.disabled}
-                    className='h-10 w-10'
-                    aria-label={t('Delete mapping')}
+              {visibleRows.map((row) => {
+                const target = splitMappingTarget(row.to)
+                return (
+                  <div
+                    key={row.id}
+                    className='grid grid-cols-[1fr_1fr_auto] items-start gap-2'
                   >
-                    <Trash2 className='h-4 w-4' aria-hidden='true' />
-                  </Button>
-                </div>
-              ))}
+                    <ComboboxInput
+                      id={rowInputId(row.id, 'from')}
+                      options={sourceOptions}
+                      value={row.from}
+                      onValueChange={(value) =>
+                        handleRowChange(row.id, 'from', value)
+                      }
+                      placeholder='gpt-3.5-turbo'
+                      emptyText='No matching items'
+                      allowCustomValue
+                      disabled={props.disabled}
+                      aria-label={t('Request Model Name')}
+                    />
+                    <div className='min-w-0 space-y-1'>
+                      <ComboboxInput
+                        id={rowInputId(row.id, 'to')}
+                        options={targetOptions}
+                        value={target.model}
+                        onValueChange={(value) =>
+                          handleRowChange(
+                            row.id,
+                            'to',
+                            mappingTargetWithEffort(value, target.effort)
+                          )
+                        }
+                        placeholder='gpt-3.5-turbo-0125'
+                        emptyText='No matching items'
+                        allowCustomValue
+                        disabled={props.disabled}
+                        aria-label={t('Upstream Model Name')}
+                      />
+                      <Label
+                        htmlFor={`${rowInputId(row.id, 'to')}-effort`}
+                        className='text-muted-foreground text-xs'
+                      >
+                        {t('Mapped reasoning effort')}
+                      </Label>
+                      <NativeSelect
+                        id={`${rowInputId(row.id, 'to')}-effort`}
+                        className='w-full'
+                        aria-label={t('Mapped reasoning effort')}
+                        value={target.effort}
+                        disabled={props.disabled || !target.model.trim()}
+                        onChange={(event) =>
+                          handleRowChange(
+                            row.id,
+                            'to',
+                            mappingTargetWithEffort(
+                              target.model,
+                              event.target.value
+                            )
+                          )
+                        }
+                      >
+                        <NativeSelectOption value=''>
+                          {t('Keep request reasoning effort')}
+                        </NativeSelectOption>
+                        {MAPPING_REASONING_EFFORTS.map((effort) => (
+                          <NativeSelectOption key={effort} value={effort}>
+                            {effort}
+                          </NativeSelectOption>
+                        ))}
+                      </NativeSelect>
+                    </div>
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='icon'
+                      onClick={() => handleDeleteRow(row.id)}
+                      disabled={props.disabled}
+                      className='h-10 w-10'
+                      aria-label={t('Delete mapping')}
+                    >
+                      <Trash2 className='h-4 w-4' aria-hidden='true' />
+                    </Button>
+                  </div>
+                )
+              })}
               {visibleRows.length === 0 && (
                 <p className='text-muted-foreground py-3 text-center text-sm'>
                   {t('No matching items')}

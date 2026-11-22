@@ -227,6 +227,10 @@ export type ContentSettings = {
 }
 
 export type ModelSettings = {
+  'global.upstream_model_mapping_visible': boolean
+  'global.site_model_mapping_visible': boolean
+  'global.upstream_model_mapping_whitelist': string
+  'global.site_model_mapping_whitelist': string
   'global.pass_through_request_enabled': boolean
   'global.thinking_model_blacklist': string
   'global.chat_completions_to_responses_policy': string

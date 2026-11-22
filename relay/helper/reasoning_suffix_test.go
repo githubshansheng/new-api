@@ -30,6 +30,35 @@ func mustApplyReasoningModelSuffix(t *testing.T, info *relaycommon.RelayInfo, ou
 	require.NoError(t, ApplyReasoningModelSuffix(nil, info, outbound...))
 }
 
+func TestModelMappingOverridesAllRequestEfforts(t *testing.T) {
+	for _, effort := range []string{"", "none", "minimal", "low", "medium", "high", "xhigh", "max"} {
+		for _, suffix := range []string{"", "@effort:high", "-high"} {
+			t.Run(effort+suffix, func(t *testing.T) {
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				ctx.Set("model_mapping", `{"gpt-6.2-sol":"gpt-6-astra@effort:low"}`)
+				origin := "gpt-6.2-sol" + suffix
+				req := &dto.GeneralOpenAIRequest{Model: origin, ReasoningEffort: effort}
+				info := &relaycommon.RelayInfo{OriginModelName: origin, Request: req, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: origin}}
+				require.NoError(t, ModelMappedHelper(ctx, info, req))
+				require.NoError(t, ApplyReasoningModelSuffix(ctx, info, req))
+				assert.Equal(t, "gpt-6-astra", req.Model)
+				assert.Equal(t, "low", req.ReasoningEffort)
+				assert.Equal(t, origin, info.OriginModelName)
+				require.NotNil(t, info.ReasoningConversion)
+				assert.Equal(t, "low", info.ReasoningConversion.Effort)
+
+				responses := &dto.OpenAIResponsesRequest{Model: origin, Reasoning: &dto.Reasoning{Effort: effort}}
+				info = &relaycommon.RelayInfo{OriginModelName: origin, Request: responses, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: origin}}
+				require.NoError(t, ModelMappedHelper(ctx, info, responses))
+				require.NoError(t, ApplyReasoningModelSuffix(ctx, info, responses))
+				assert.Equal(t, "gpt-6-astra", responses.Model)
+				require.NotNil(t, responses.Reasoning)
+				assert.Equal(t, "low", responses.Reasoning.Effort)
+			})
+		}
+	}
+}
+
 func TestApplyReasoningModelSuffixTrimsUpstreamAndAttachesState(t *testing.T) {
 	info := &relaycommon.RelayInfo{
 		OriginModelName: "claude-3-7-sonnet-thinking",

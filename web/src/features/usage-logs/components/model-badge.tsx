@@ -105,8 +105,9 @@ export function ModelBadge(props: ModelBadgeProps) {
     !!(
       props.responseModel &&
       (mismatch ||
-        props.responseModel.returned_model !==
-          props.responseModel.requested_model ||
+        (props.responseModel.returned_model &&
+          props.responseModel.returned_model !==
+            props.responseModel.requested_model) ||
         (props.responseModel.upstream_model &&
           props.responseModel.upstream_model !==
             props.responseModel.requested_model))
@@ -230,34 +231,36 @@ export function ResponseModelDetails(props: {
         },
         {
           label: t('Upstream Model'),
-          value:
-            props.observation.upstream_model ||
-            props.observation.requested_model,
+          value: props.observation.upstream_model,
         },
         {
           label: t('Response Model'),
           value: props.observation.returned_model,
         },
-      ].map((model) => (
-        <DetailRow
-          key={model.label}
-          label={model.label}
-          value={
-            <span className='inline-flex max-w-full items-start gap-1 align-top'>
-              <span className='min-w-0 leading-5 wrap-anywhere'>
-                {model.value}
+      ]
+        .filter(
+          (model): model is { label: string; value: string } => !!model.value
+        )
+        .map((model) => (
+          <DetailRow
+            key={model.label}
+            label={model.label}
+            value={
+              <span className='inline-flex max-w-full items-start gap-1 align-top'>
+                <span className='min-w-0 leading-5 wrap-anywhere'>
+                  {model.value}
+                </span>
+                <CopyButton
+                  value={model.value}
+                  className='size-5'
+                  iconClassName='size-3'
+                  aria-label={t('Copy {{field}}', { field: model.label })}
+                />
               </span>
-              <CopyButton
-                value={model.value}
-                className='size-5'
-                iconClassName='size-3'
-                aria-label={t('Copy {{field}}', { field: model.label })}
-              />
-            </span>
-          }
-          mono
-        />
-      ))}
+            }
+            mono
+          />
+        ))}
       {mismatch && (
         <p className='text-muted-foreground text-xs'>
           {t(

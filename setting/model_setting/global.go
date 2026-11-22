@@ -36,8 +36,12 @@ func (p ChatCompletionsToResponsesPolicy) IsChannelEnabled(channelID int, channe
 }
 
 type GlobalSettings struct {
-	PassThroughRequestEnabled bool     `json:"pass_through_request_enabled"`
-	ThinkingModelBlacklist    []string `json:"thinking_model_blacklist"`
+	UpstreamModelMappingVisible   bool     `json:"upstream_model_mapping_visible"`
+	UpstreamModelMappingWhitelist []string `json:"upstream_model_mapping_whitelist"`
+	SiteModelMappingVisible       bool     `json:"site_model_mapping_visible"`
+	SiteModelMappingWhitelist     []string `json:"site_model_mapping_whitelist"`
+	PassThroughRequestEnabled     bool     `json:"pass_through_request_enabled"`
+	ThinkingModelBlacklist        []string `json:"thinking_model_blacklist"`
 	// EffortTailModelIDs lists real model IDs that sit inside the GPT/o-series
 	// family whitelist but whose names already end in an effort word.
 	EffortTailModelIDs               []string                         `json:"effort_tail_model_ids"`
@@ -46,7 +50,11 @@ type GlobalSettings struct {
 
 // 默认配置
 var defaultOpenaiSettings = GlobalSettings{
-	PassThroughRequestEnabled: false,
+	UpstreamModelMappingVisible:   true,
+	UpstreamModelMappingWhitelist: []string{},
+	SiteModelMappingVisible:       true,
+	SiteModelMappingWhitelist:     []string{},
+	PassThroughRequestEnabled:     false,
 	ThinkingModelBlacklist: []string{
 		"moonshotai/kimi-k2-thinking",
 		"kimi-k2-thinking",
@@ -74,6 +82,16 @@ func init() {
 
 func GetGlobalSettings() *GlobalSettings {
 	return &globalSettings
+}
+
+// ModelMappingVisibility is evaluated when reading records, including historical
+// records. Whitelists match the requested model, never a hidden upstream name.
+func ModelMappingVisibility(requestedModel string, viewerRole int) (upstream bool, site bool) {
+	if viewerRole >= common.RoleAdminUser {
+		return true, true
+	}
+	return globalSettings.UpstreamModelMappingVisible || slices.Contains(globalSettings.UpstreamModelMappingWhitelist, requestedModel),
+		globalSettings.SiteModelMappingVisible || slices.Contains(globalSettings.SiteModelMappingWhitelist, requestedModel)
 }
 
 const thinkingBlacklistRegexPrefix = "re:"

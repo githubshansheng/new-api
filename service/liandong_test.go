@@ -1,11 +1,20 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"image"
+	"image/png"
+	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -152,7 +161,7 @@ func TestParseLiandongLoginToken(t *testing.T) {
 }
 
 func TestLiandongProviderBusinessRejectionIsDefinitive(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"code":0,"msg":"商品不存在","data":null}`))
 	}))
@@ -449,10 +458,11 @@ func TestCreateLiandongPaymentFallsBackToProviderProductPageWhenWAFBlocksCreatio
 	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
 		"LiandongEnabled":       "true",
 		"LiandongCreateEnabled": "true",
+		"LiandongIframeEnabled": "true",
 		"LiandongJUUID":         "test-merchant-id",
 	}))
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><script>window._waf_is_mobile=false</script><div id="waf_nc_h5_block" class="aliyun-captcha"></div></html>`))
 	}))
@@ -469,11 +479,310 @@ func TestCreateLiandongPaymentFallsBackToProviderProductPageWhenWAFBlocksCreatio
 	require.NotNil(t, view)
 	assert.Equal(t, model.LiandongPaymentStatusPending, view.PaymentStatus)
 	assert.Equal(t, "https://pay.ldxp.cn/item/fallback-goods", view.FallbackURL)
+	assert.True(t, view.IframeAllowed)
 	assert.Len(t, view.FallbackContact, 12)
 	assert.Empty(t, view.PaymentURL)
 	stored, err := model.GetLiandongOrder(view.LocalTradeNo)
 	require.NoError(t, err)
 	assert.Nil(t, stored.ProviderTradeNo)
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongIframeEnabled": "false",
+	}))
+	disabledView := LiandongOrderView(stored)
+	assert.False(t, disabledView.IframeAllowed)
+	assert.Equal(t, view.FallbackURL, disabledView.FallbackURL)
+}
+
+func TestLiandongPaymentPageReturnsDirectLinkWhenEmbeddingDisabled(t *testing.T) {
+	resetLiandongServiceFixtures(t)
+	user, order := createLiandongServiceQuotaOrder(t, "123456789012")
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongEnabled":       "true",
+		"LiandongIframeEnabled": "false",
+		"LiandongBaseURL":       "https://provider.example",
+	}))
+	page, err := LoadLiandongPaymentPageForUser(context.Background(), user.Id, order.LocalTradeNo)
+	require.NoError(t, err)
+	require.NotNil(t, page)
+	assert.Equal(t, "https://provider.example/shopApi/Pay/payment?trade_no="+*order.ProviderTradeNo, page.RedirectURL)
+	assert.Empty(t, page.HTML)
+	_, err = LoadLiandongPaymentPageForUser(context.Background(), user.Id+1, order.LocalTradeNo)
+	assert.ErrorIs(t, err, model.ErrLiandongOrderNotFound)
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{"LiandongEnabled": "false"}))
+	page, err = LoadLiandongPaymentPageForUser(context.Background(), user.Id, order.LocalTradeNo)
+	assert.Error(t, err)
+	assert.Nil(t, page)
+}
+
+func TestCreateLiandongPaymentFallsBackToConfiguredProductPageOnForbidden(t *testing.T) {
+	resetLiandongServiceFixtures(t)
+	user := &model.User{
+		Username: "liandong-forbidden-fallback-user",
+		Password: "password",
+		Status:   common.UserStatusEnabled,
+		Role:     common.RoleCommonUser,
+		Group:    "default",
+		AffCode:  common.GetRandomString(16),
+	}
+	require.NoError(t, model.DB.Create(user).Error)
+	product := &model.LiandongProduct{
+		BusinessType:        model.LiandongBusinessTypeQuota,
+		GoodsType:           "card",
+		Name:                "Forbidden fallback product",
+		GoodsKey:            "forbidden-fallback-goods",
+		QuotaAmount:         100,
+		ExpectedAmountMinor: 100,
+		Currency:            "CNY",
+		InventoryMode:       model.LiandongInventoryModeUnlimited,
+		Enabled:             true,
+	}
+	require.NoError(t, model.DB.Create(product).Error)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<html><title>Access denied</title></html>`))
+	}))
+	defer server.Close()
+
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongEnabled":       "true",
+		"LiandongCreateEnabled": "true",
+		"LiandongJUUID":         "test-merchant-id",
+		"LiandongBaseURL":       server.URL + "/card",
+	}))
+
+	view, err := createLiandongPayment(
+		context.Background(),
+		user.Id,
+		product.ID,
+		&liandongClient{httpClient: server.Client(), baseURL: server.URL + "/card"},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, view)
+	assert.Equal(t, model.LiandongPaymentStatusPending, view.PaymentStatus)
+	assert.Equal(t, server.URL+"/card/item/forbidden-fallback-goods", view.FallbackURL)
+	assert.Len(t, view.FallbackContact, 12)
+	assert.Empty(t, view.PaymentURL)
+
+	stored, err := model.GetLiandongOrder(view.LocalTradeNo)
+	require.NoError(t, err)
+	assert.Equal(t, model.LiandongPaymentStatusPending, stored.PaymentStatus)
+	assert.Nil(t, stored.ProviderTradeNo)
+	assert.Contains(t, stored.LastError, "denied access (HTTP 403)")
+}
+
+func TestCreateLiandongPaymentFallsBackWhenProviderReturnsAccessDeniedPage(t *testing.T) {
+	resetLiandongServiceFixtures(t)
+	user := &model.User{
+		Username: "liandong-denied-page-fallback-user",
+		Password: "password",
+		Status:   common.UserStatusEnabled,
+		Role:     common.RoleCommonUser,
+		Group:    "default",
+		AffCode:  common.GetRandomString(16),
+	}
+	require.NoError(t, model.DB.Create(user).Error)
+	product := &model.LiandongProduct{
+		BusinessType:        model.LiandongBusinessTypeQuota,
+		GoodsType:           "card",
+		Name:                "Denied page fallback product",
+		GoodsKey:            "denied-page-fallback-goods",
+		QuotaAmount:         100,
+		ExpectedAmountMinor: 100,
+		Currency:            "CNY",
+		InventoryMode:       model.LiandongInventoryModeUnlimited,
+		Enabled:             true,
+	}
+	require.NoError(t, model.DB.Create(product).Error)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><head><script>var arg1='E5799D5C65C2105E28E63E6A639F5514BAAA7D15';</script></head><body>403 禁止访问 访问受限 - 检测到高风险异常访问行为</body></html>`))
+	}))
+	defer server.Close()
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongEnabled":       "true",
+		"LiandongCreateEnabled": "true",
+		"LiandongJUUID":         "test-merchant-id",
+		"LiandongBaseURL":       server.URL + "/card",
+	}))
+
+	view, err := createLiandongPayment(
+		context.Background(),
+		user.Id,
+		product.ID,
+		&liandongClient{httpClient: server.Client(), baseURL: server.URL + "/card"},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, view)
+	assert.Equal(t, model.LiandongPaymentStatusPending, view.PaymentStatus)
+	assert.Equal(t, server.URL+"/card/item/denied-page-fallback-goods", view.FallbackURL)
+	assert.Len(t, view.FallbackContact, 12)
+	assert.Empty(t, view.PaymentURL)
+}
+
+func TestLiandongCreateErrorAllowsFallbackForWrappedForbiddenErrors(t *testing.T) {
+	createErr := &liandongCreateError{
+		definitive: true,
+		err:        errors.New("liandong provider denied access (HTTP 403)"),
+	}
+	assert.True(t, liandongCreateErrorAllowsFallback(createErr))
+	assert.True(t, liandongCreateErrorAllowsFallback(errors.New(
+		"provider create response is invalid (received HTML instead of JSON; 4321 bytes)",
+	)))
+	assert.True(t, liandongCreateErrorAllowsFallback(errors.New(
+		"provider returned HTTP 429",
+	)))
+	assert.True(t, liandongCreateErrorAllowsFallback(fmt.Errorf(
+		"login preflight: %w",
+		&liandongQueryError{
+			statusCode: http.StatusForbidden,
+			forbidden:  true,
+			err:        errors.New("denied"),
+		},
+	)))
+	assert.False(t, liandongCreateErrorAllowsFallback(
+		errors.New("provider returned HTTP 400"),
+	))
+}
+
+func TestCreateLiandongPaymentFallsBackWhenLoginIsForbidden(t *testing.T) {
+	resetLiandongServiceFixtures(t)
+	user := &model.User{
+		Username: "liandong-login-forbidden-fallback-user",
+		Password: "password",
+		Status:   common.UserStatusEnabled,
+		Role:     common.RoleCommonUser,
+		Group:    "default",
+		AffCode:  common.GetRandomString(16),
+	}
+	require.NoError(t, model.DB.Create(user).Error)
+	product := &model.LiandongProduct{
+		BusinessType:        model.LiandongBusinessTypeQuota,
+		GoodsType:           "card",
+		Name:                "Forbidden login fallback product",
+		GoodsKey:            "forbidden-login-fallback-goods",
+		QuotaAmount:         100,
+		ExpectedAmountMinor: 100,
+		Currency:            "CNY",
+		InventoryMode:       model.LiandongInventoryModeUnlimited,
+		Enabled:             true,
+	}
+	require.NoError(t, model.DB.Create(product).Error)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/card" + liandongLoginPath:
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`<html><title>Access denied</title></html>`))
+		case "/card" + liandongCreatePath:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"payUrl":"/shopApi/Pay/payment?trade_no=TRADE-LOGIN-BLOCKED"}`))
+		default:
+			t.Errorf("unexpected upstream path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongEnabled":       "true",
+		"LiandongCreateEnabled": "true",
+		"LiandongJUUID":         "test-merchant-id",
+		"LiandongBaseURL":       server.URL + "/card",
+		"LiandongAuthMode":      setting.LiandongAuthModeCredentials,
+		"LiandongUsername":      "login-user",
+		"LiandongPassword":      "login-password",
+	}))
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	httpClient := server.Client()
+	httpClient.Jar = jar
+
+	view, err := createLiandongPayment(
+		context.Background(),
+		user.Id,
+		product.ID,
+		&liandongClient{httpClient: httpClient, baseURL: server.URL + "/card"},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, view)
+	assert.Equal(t, model.LiandongPaymentStatusPending, view.PaymentStatus)
+	assert.Equal(t, "/api/payment/liandong/orders/"+view.LocalTradeNo+"/page", view.PaymentURL)
+	assert.Empty(t, view.FallbackURL)
+}
+
+func TestCreateLiandongPaymentFallsBackWhenOrderForbiddenAndLoginRefreshFails(t *testing.T) {
+	resetLiandongServiceFixtures(t)
+	user := &model.User{
+		Username: "liandong-order-forbidden-login-failed-user",
+		Password: "password",
+		Status:   common.UserStatusEnabled,
+		Role:     common.RoleCommonUser,
+		Group:    "default",
+		AffCode:  common.GetRandomString(16),
+	}
+	require.NoError(t, model.DB.Create(user).Error)
+	product := &model.LiandongProduct{
+		BusinessType:        model.LiandongBusinessTypeQuota,
+		GoodsType:           "card",
+		Name:                "Forbidden order fallback product",
+		GoodsKey:            "forbidden-order-fallback-goods",
+		QuotaAmount:         100,
+		ExpectedAmountMinor: 100,
+		Currency:            "CNY",
+		InventoryMode:       model.LiandongInventoryModeUnlimited,
+		Enabled:             true,
+	}
+	require.NoError(t, model.DB.Create(product).Error)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/card" + liandongCreatePath:
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`<html><title>Access denied</title></html>`))
+		case "/card" + liandongLoginPath:
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`<html><title>Access denied</title></html>`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	require.NoError(t, model.UpdateOptionsBulk(map[string]string{
+		"LiandongEnabled":       "true",
+		"LiandongCreateEnabled": "true",
+		"LiandongJUUID":         "test-merchant-id",
+		"LiandongBaseURL":       server.URL + "/card",
+		"LiandongAuthMode":      setting.LiandongAuthModeCredentials,
+		"LiandongUsername":      "login-user",
+		"LiandongPassword":      "login-password",
+	}))
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	httpClient := server.Client()
+	httpClient.Jar = jar
+
+	view, err := createLiandongPayment(
+		context.Background(),
+		user.Id,
+		product.ID,
+		&liandongClient{httpClient: httpClient, baseURL: server.URL + "/card"},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, view)
+	assert.Equal(t, model.LiandongPaymentStatusPending, view.PaymentStatus)
+	assert.Equal(t, server.URL+"/card/item/forbidden-order-fallback-goods", view.FallbackURL)
+	assert.Len(t, view.FallbackContact, 12)
+	assert.Empty(t, view.PaymentURL)
 }
 
 func TestLiandongProviderResponseDiagnosticRedactsConfiguredSecrets(t *testing.T) {
@@ -956,6 +1265,203 @@ func TestLiandongPaymentPageReloginCarriesUpdatedCookies(t *testing.T) {
 	assert.Contains(t, page.HTML, "payment QR")
 	assert.Equal(t, int32(2), paymentRequests.Load())
 	assert.Equal(t, int32(1), loginRequests.Load())
+}
+
+func TestLiandongEmbeddedPaymentKeepsQRCodeRequestsOnProviderClient(t *testing.T) {
+	var pixels bytes.Buffer
+	require.NoError(t, png.Encode(&pixels, image.NewGray(image.Rect(0, 0, 29, 29))))
+	var paths []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case liandongPaymentPath:
+			assert.Equal(t, "secret-token", r.Header.Get("merchant-token"))
+			http.SetCookie(w, &http.Cookie{Name: "cdn_sec_tc", Value: "rotated-cookie", Path: "/"})
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<html><head><script src="/static/jquery.js"></script></head><body><img src="/static/wx.png"><img class="code" src="/payApi/common/generateQrcode.html?str=weixin%253A%252F%252Fpay"><script>fetch('/payApi/common/checkOrderStatus.html')</script></body></html>`))
+		case "/payApi/common/generateQrcode.html":
+			assert.Equal(t, "str=weixin%253A%252F%252Fpay", r.URL.RawQuery)
+			assert.Empty(t, r.Header.Get("merchant-token"))
+			cookie, cookieErr := r.Cookie("cdn_sec_tc")
+			require.NoError(t, cookieErr)
+			assert.Equal(t, "rotated-cookie", cookie.Value)
+			http.SetCookie(w, &http.Cookie{Name: "PHPSESSID", Value: "next-session", Path: "/"})
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(pixels.Bytes())
+		default:
+			t.Errorf("unexpected upstream request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	proxyAddress, tunnels := startLiandongPaymentSOCKS5Proxy(t, server.Listener.Addr().String())
+	settingsSnapshot := setting.LiandongPaymentSettings{
+		BaseURL: "https://checkout.example.com", AuthMode: setting.LiandongAuthModeManualToken,
+		MerchantToken: "secret-token", ProxyEnabled: true, ProxyURL: "socks5://" + proxyAddress,
+	}
+	client := newLiandongClientWithSettings(settingsSnapshot)
+	transport := client.httpClient.Transport.(*http.Transport)
+	transport.TLSClientConfig.RootCAs = server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+	defer client.httpClient.CloseIdleConnections()
+	page, err := client.loadPaymentPage(context.Background(), "TRADE123", settingsSnapshot)
+	require.NoError(t, err)
+	page, err = client.embedPaymentQRCode(context.Background(), page)
+	require.NoError(t, err)
+	assert.Equal(t, []string{liandongPaymentPath, "/payApi/common/generateQrcode.html"}, paths)
+	assert.Positive(t, tunnels.Load(), "payment page and QR must use the dedicated SOCKS proxy")
+	assert.Empty(t, page.RedirectURL)
+	assert.Contains(t, page.HTML, "data:image/png;base64,"+base64.StdEncoding.EncodeToString(pixels.Bytes()))
+	assert.NotContains(t, page.HTML, "<script")
+	assert.NotContains(t, page.HTML, server.URL)
+	assert.NotContains(t, page.HTML, "secret-token")
+	assert.NotContains(t, page.HTML, "rotated-cookie")
+	assert.NotContains(t, page.HTML, "next-session")
+	assert.Contains(t, page.HTML, "default-src 'none'")
+	origin, err := url.Parse(settingsSnapshot.BaseURL)
+	require.NoError(t, err)
+	assert.Contains(t, client.httpClient.Jar.Cookies(origin), &http.Cookie{Name: "PHPSESSID", Value: "next-session"})
+}
+
+func startLiandongPaymentSOCKS5Proxy(t *testing.T, upstreamAddress string) (string, *atomic.Int32) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	var tunnels atomic.Int32
+	var workers sync.WaitGroup
+	workers.Go(func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			workers.Go(func() {
+				defer conn.Close()
+				require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+				var greeting [3]byte
+				_, readErr := io.ReadFull(conn, greeting[:])
+				require.NoError(t, readErr)
+				require.Equal(t, [3]byte{5, 1, 0}, greeting)
+				_, writeErr := conn.Write([]byte{5, 0})
+				require.NoError(t, writeErr)
+				var header [5]byte
+				_, readErr = io.ReadFull(conn, header[:])
+				require.NoError(t, readErr)
+				require.Equal(t, []byte{5, 1, 0, 3}, header[:4])
+				destination := make([]byte, int(header[4])+2)
+				_, readErr = io.ReadFull(conn, destination)
+				require.NoError(t, readErr)
+				assert.Equal(t, "checkout.example.com", string(destination[:len(destination)-2]))
+				assert.EqualValues(t, 443, binary.BigEndian.Uint16(destination[len(destination)-2:]))
+				upstream, dialErr := net.DialTimeout("tcp", upstreamAddress, time.Second)
+				require.NoError(t, dialErr)
+				defer upstream.Close()
+				_, writeErr = conn.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 0})
+				require.NoError(t, writeErr)
+				tunnels.Add(1)
+				var copyWorker sync.WaitGroup
+				copyWorker.Go(func() {
+					_, _ = io.Copy(upstream, conn)
+					_ = upstream.Close()
+				})
+				_, _ = io.Copy(conn, upstream)
+				_ = conn.Close()
+				copyWorker.Wait()
+			})
+		}
+	})
+	t.Cleanup(func() {
+		_ = listener.Close()
+		workers.Wait()
+	})
+	return listener.Addr().String(), &tunnels
+}
+
+func TestLiandongEmbeddedPaymentRejectsUnsafeOrAmbiguousQRCode(t *testing.T) {
+	client := newLiandongClientWithSettings(setting.LiandongPaymentSettings{BaseURL: "https://checkout.example.com"})
+	for _, test := range []struct {
+		name string
+		html string
+		want string
+	}{
+		{"logo is not a QR", `<img src="/logo.png">`, "unique embeddable QR"},
+		{"ambiguous QR images", `<img class="code" src="/a.png"><img class="code" src="/b.png">`, "unique embeddable QR"},
+		{"cross-origin image", `<img class="code" src="//other.example.com/a.png">`, "origin is not allowed"},
+		{"image credentials", `<img class="code" src="https://user:secret@checkout.example.com/a.png">`, "origin is not allowed"},
+		{"invalid embedded image", `<img class="code" src="data:image/png;base64,bm90LWFuLWltYWdl">`, "QR image is invalid"},
+		{"unsafe image scheme", `<img class="code" src="file:///etc/passwd">`, "origin is not allowed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := client.embedPaymentQRCode(context.Background(), &LiandongPaymentPage{HTML: test.html})
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+	for _, target := range []string{"https://127.0.0.1/qr", "https://169.254.169.254/qr", "http://public.example.com/qr", "https://user:secret@public.example.com/qr"} {
+		t.Run(target, func(t *testing.T) {
+			_, err := client.embedPaymentQRCode(context.Background(), &LiandongPaymentPage{RedirectURL: target})
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "secret")
+		})
+	}
+}
+
+func TestLiandongPaymentRedirectPinsPublicTargetThroughHTTPProxies(t *testing.T) {
+	for _, secureProxy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("https_proxy=%t", secureProxy), func(t *testing.T) {
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "processor.example.com", r.Host)
+				assert.Equal(t, "processor.example.com", r.TLS.ServerName)
+				assert.Empty(t, r.Header.Get("merchant-token"))
+				assert.Empty(t, r.Header.Get("Cookie"))
+				_, _ = w.Write([]byte("processor-page"))
+			}))
+			defer upstream.Close()
+			var connects atomic.Int32
+			proxyServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodConnect, r.Method)
+				assert.Equal(t, "8.8.8.8:443", r.Host)
+				peer, err := net.DialTimeout("tcp", upstream.Listener.Addr().String(), time.Second)
+				require.NoError(t, err)
+				defer peer.Close()
+				conn, buffered, err := w.(http.Hijacker).Hijack()
+				require.NoError(t, err)
+				defer conn.Close()
+				require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+				_, err = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+				require.NoError(t, err)
+				connects.Add(1)
+				var copying sync.WaitGroup
+				copying.Go(func() {
+					_, _ = io.Copy(peer, buffered)
+					_ = peer.Close()
+				})
+				_, _ = io.Copy(conn, peer)
+				_ = conn.Close()
+				copying.Wait()
+			}))
+			if secureProxy {
+				proxyServer.StartTLS()
+			} else {
+				proxyServer.Start()
+			}
+			defer proxyServer.Close()
+			client := newLiandongClientWithSettings(setting.LiandongPaymentSettings{
+				BaseURL: "https://merchant.example.com", ProxyEnabled: true, ProxyURL: proxyServer.URL,
+			})
+			transport := client.httpClient.Transport.(*http.Transport)
+			transport.TLSClientConfig.RootCAs = upstream.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+			client.httpClient.Transport = &liandongPublicPaymentTransport{
+				transport: transport, resolver: staticSSRFResolver{"processor.example.com": {{IP: net.ParseIP("8.8.8.8")}}},
+			}
+			response, err := client.httpClient.Get("https://processor.example.com/checkout?order=TEST123")
+			require.NoError(t, err)
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			require.NoError(t, err)
+			assert.Equal(t, "processor-page", string(body))
+			assert.Equal(t, int32(1), connects.Load())
+			assert.Equal(t, "processor.example.com", response.Request.URL.Host)
+		})
+	}
 }
 
 func TestCreateLiandongPaymentRejectsUnavailableInventoryBeforeProviderRequest(t *testing.T) {
@@ -1785,8 +2291,8 @@ func TestCreateLiandongPaymentWaitsForConcurrentCreationBeforeReplacing(t *testi
 	assert.Zero(t, exactRequests.Load())
 	firstStored, err := model.GetLiandongOrder(firstResult.view.LocalTradeNo)
 	require.NoError(t, err)
-	assert.Equal(t, model.LiandongPaymentStatusPending, firstStored.PaymentStatus)
-	assert.Empty(t, firstStored.ClosedReason)
+	assert.Equal(t, model.LiandongPaymentStatusClosed, firstStored.PaymentStatus)
+	assert.Equal(t, "replaced by a new payment order", firstStored.ClosedReason)
 	secondStored, err := model.GetLiandongOrder(secondResult.view.LocalTradeNo)
 	require.NoError(t, err)
 	assert.Equal(t, model.LiandongPaymentStatusPending, secondStored.PaymentStatus)
@@ -1799,7 +2305,7 @@ func TestCreateLiandongPaymentWaitsForConcurrentCreationBeforeReplacing(t *testi
 			model.LiandongPaymentStatusCreateUnknown,
 		}).
 		Count(&activeOrderCount).Error)
-	assert.EqualValues(t, 2, activeOrderCount)
+	assert.EqualValues(t, 1, activeOrderCount)
 	summaries, err := model.GetLiandongInventorySummaries(
 		[]int{firstProduct.ID, secondProduct.ID},
 	)
@@ -1973,8 +2479,8 @@ func TestCreateLiandongPaymentCreatesNewProviderOrderEachTime(t *testing.T) {
 	assert.Contains(t, second.PaymentURL, second.LocalTradeNo)
 	firstStored, err := model.GetLiandongOrder(first.LocalTradeNo)
 	require.NoError(t, err)
-	assert.Equal(t, model.LiandongPaymentStatusPending, firstStored.PaymentStatus)
-	assert.Empty(t, firstStored.ClosedReason)
+	assert.Equal(t, model.LiandongPaymentStatusClosed, firstStored.PaymentStatus)
+	assert.Equal(t, "replaced by a new payment order", firstStored.ClosedReason)
 	require.NotNil(t, firstStored.ProviderTradeNo)
 	assert.Equal(t, "TRADE001", *firstStored.ProviderTradeNo)
 	secondStored, err := model.GetLiandongOrder(second.LocalTradeNo)
@@ -2074,8 +2580,8 @@ func TestCreateLiandongPaymentReplacesFiniteInventoryReservation(t *testing.T) {
 	assert.Zero(t, exactRequests.Load())
 	firstStored, err := model.GetLiandongOrder(first.LocalTradeNo)
 	require.NoError(t, err)
-	assert.Equal(t, model.LiandongPaymentStatusPending, firstStored.PaymentStatus)
-	assert.Empty(t, firstStored.ClosedReason)
+	assert.Equal(t, model.LiandongPaymentStatusClosed, firstStored.PaymentStatus)
+	assert.Equal(t, "replaced by a new payment order", firstStored.ClosedReason)
 	secondStored, err := model.GetLiandongOrder(second.LocalTradeNo)
 	require.NoError(t, err)
 	assert.Equal(t, secondProduct.ID, secondStored.ProductID)
@@ -2088,7 +2594,7 @@ func TestCreateLiandongPaymentReplacesFiniteInventoryReservation(t *testing.T) {
 			model.LiandongPaymentStatusCreateUnknown,
 		}).
 		Count(&activeOrderCount).Error)
-	assert.EqualValues(t, 2, activeOrderCount)
+	assert.EqualValues(t, 1, activeOrderCount)
 	summaries, err := model.GetLiandongInventorySummaries(
 		[]int{firstProduct.ID, secondProduct.ID},
 	)
@@ -2312,9 +2818,9 @@ func TestCreateLiandongPaymentReplacesOrderWithoutReconciliationAuthentication(t
 
 	oldOrder, err := model.GetLiandongOrder(oldCreate.Order.LocalTradeNo)
 	require.NoError(t, err)
-	assert.Equal(t, model.LiandongPaymentStatusPending, oldOrder.PaymentStatus)
+	assert.Equal(t, model.LiandongPaymentStatusClosed, oldOrder.PaymentStatus)
 	assert.Equal(t, model.LiandongFulfillmentStatusWaiting, oldOrder.FulfillmentStatus)
-	assert.Empty(t, oldOrder.ClosedReason)
+	assert.Equal(t, "replaced by a new payment order", oldOrder.ClosedReason)
 
 	var newOrder model.LiandongOrder
 	require.NoError(t, model.DB.
@@ -2455,6 +2961,7 @@ func TestCreateLiandongPaymentReturnsLocalizedSafeError(t *testing.T) {
 
 func resetLiandongServiceFixtures(t *testing.T) {
 	t.Helper()
+	clearLiandongForbidden()
 	reset := func() {
 		model.DB.Exec("DELETE FROM liandong_product_inventory_codes")
 		model.DB.Exec("DELETE FROM liandong_product_thumbnails")

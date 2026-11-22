@@ -6,9 +6,27 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTaskLogMappingVisibilityDoesNotMutateStoredTask(t *testing.T) {
+	settings := model_setting.GetGlobalSettings()
+	previous := *settings
+	t.Cleanup(func() { *settings = previous })
+	settings.SiteModelMappingVisible = false
+	settings.SiteModelMappingWhitelist = nil
+	task := &model.Task{Properties: model.Properties{OriginModelName: "alias", UpstreamModelName: "private-model"}}
+	user := tasksToDto([]*model.Task{task}, false, common.RoleCommonUser)[0]
+	assert.Empty(t, user.Properties.(model.Properties).UpstreamModelName)
+	assert.Equal(t, "private-model", task.Properties.UpstreamModelName)
+	admin := tasksToDto([]*model.Task{task}, false, common.RoleAdminUser)[0]
+	assert.Equal(t, "private-model", admin.Properties.(model.Properties).UpstreamModelName)
+	settings.SiteModelMappingWhitelist = []string{"alias"}
+	allowed := tasksToDto([]*model.Task{task}, false, common.RoleCommonUser)[0]
+	assert.Equal(t, "private-model", allowed.Properties.(model.Properties).UpstreamModelName)
+}
 
 func TestTaskLogDTOSeparatesUserAdminAndRootDetails(t *testing.T) {
 	task := &model.Task{

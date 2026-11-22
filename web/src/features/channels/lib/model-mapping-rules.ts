@@ -24,6 +24,42 @@ export type ModelMappingPair = {
   to: string
 }
 
+export const MAPPING_REASONING_EFFORTS = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
+
+/** Keep the existing string mapping contract and opaque provider model names. */
+export function splitMappingTarget(target: string): {
+  model: string
+  effort: string
+} {
+  const [base, ...modifiers] = target.split('@')
+  if (!base) return { model: target, effort: '' }
+  let effort = ''
+  const preserved = [base]
+  for (const modifier of modifiers) {
+    const match = /^effort:(none|minimal|low|medium|high|xhigh|max)$/i.exec(
+      modifier
+    )
+    if (match) effort = match[1].toLowerCase()
+    else preserved.push(modifier)
+  }
+  return { model: preserved.join('@'), effort }
+}
+
+export function mappingTargetWithEffort(model: string, effort: string): string {
+  if (!effort) return model.trim()
+  const name = splitMappingTarget(model.trim()).model
+  if (!name) return name
+  return `${name}@effort:${effort}`
+}
+
 /** Which side of the mapping the selected model names belong to. */
 export type ModelMappingDirection = 'upstream' | 'request'
 

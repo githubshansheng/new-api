@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -54,6 +55,7 @@ const (
 	liandongOrderQueryFailuresBeforeLoginRefresh = 3
 	liandongPaymentChannelRetryLimit             = 2
 	liandongPaymentChannelDisabledMessage        = "该商户未启用此支付渠道"
+	liandongUpstreamForbiddenBackoff             = 5 * time.Minute
 )
 
 var liandongTradeNoPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{6,128}$`)
@@ -64,6 +66,7 @@ var liandongSensitiveDiagnosticValuePattern = regexp.MustCompile(
 )
 var liandongAuthRefreshMu sync.Mutex
 var liandongCookieJars sync.Map
+var liandongForbiddenUntil atomic.Int64
 
 type liandongCookieContext struct {
 	jar                    http.CookieJar
@@ -136,6 +139,7 @@ type LiandongPaymentView struct {
 type LiandongPaymentPage struct {
 	HTML        string `json:"html,omitempty"`
 	RedirectURL string `json:"redirect_url,omitempty"`
+	documentURL string
 }
 
 type liandongClient struct {
@@ -276,6 +280,7 @@ type liandongCreateError struct {
 type liandongQueryError struct {
 	statusCode int
 	systemic   bool
+	forbidden  bool
 	err        error
 }
 
@@ -287,6 +292,19 @@ func (e *liandongQueryError) Unwrap() error {
 	return e.err
 }
 
+func (e *liandongQueryError) isForbidden() bool {
+	if e == nil {
+		return false
+	}
+	if e.forbidden ||
+		e.statusCode == http.StatusForbidden ||
+		(e.err != nil && strings.Contains(e.err.Error(), "denied access (HTTP 403)")) {
+		return true
+	}
+	var nested *liandongQueryError
+	return errors.As(e.err, &nested) && nested.isForbidden()
+}
+
 func (e *liandongCreateError) Error() string {
 	return e.err.Error()
 }
@@ -295,8 +313,81 @@ func (e *liandongCreateError) Unwrap() error {
 	return e.err
 }
 
+func liandongCreateErrorAllowsFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	if liandongWebAccessBlocked(err.Error()) {
+		return true
+	}
+	var createErr *liandongCreateError
+	if errors.As(err, &createErr) && createErr.fallback {
+		return true
+	}
+	var queryErr *liandongQueryError
+	if errors.As(err, &queryErr) && queryErr.isForbidden() {
+		return true
+	}
+	return false
+}
+
+func liandongForbiddenResponse(
+	statusCode int,
+	responseBody []byte,
+) bool {
+	if statusCode == http.StatusForbidden {
+		return true
+	}
+	return statusCode == http.StatusOK && isLiandongAccessDeniedPage(responseBody)
+}
+
+func liandongWebAccessBlocked(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(normalized, "http 403") ||
+		strings.Contains(normalized, "http 429") ||
+		strings.Contains(normalized, "access denied") ||
+		strings.Contains(normalized, "访问受限") ||
+		strings.Contains(normalized, "禁止访问") ||
+		(strings.Contains(normalized, "html") &&
+			strings.Contains(normalized, "instead of json"))
+}
+
+func isLiandongAccessDeniedPage(body []byte) bool {
+	normalized := bytes.ToLower(normalizeLiandongJSONBody(body))
+	return bytes.Contains(normalized, []byte("访问受限")) ||
+		bytes.Contains(normalized, []byte("禁止访问")) ||
+		bytes.Contains(normalized, []byte("access denied")) ||
+		bytes.Contains(normalized, []byte("request blocked"))
+}
+
+func markLiandongForbidden() {
+	liandongForbiddenUntil.Store(time.Now().Add(liandongUpstreamForbiddenBackoff).Unix())
+}
+
+func clearLiandongForbidden() {
+	liandongForbiddenUntil.Store(0)
+}
+
+func liandongForbiddenBackoffRemaining() time.Duration {
+	until := liandongForbiddenUntil.Load()
+	if until <= 0 {
+		return 0
+	}
+	remaining := time.Until(time.Unix(until, 0))
+	if remaining <= 0 {
+		liandongForbiddenUntil.CompareAndSwap(until, 0)
+		return 0
+	}
+	return remaining
+}
+
+func LiandongForbiddenBackoffRemaining() time.Duration {
+	return liandongForbiddenBackoffRemaining()
+}
+
 type liandongProviderRejection struct {
 	message string
+	code    int
 }
 
 func (e *liandongProviderRejection) Error() string {
@@ -304,6 +395,10 @@ func (e *liandongProviderRejection) Error() string {
 		return "provider rejected order"
 	}
 	return "provider rejected order: " + e.message
+}
+
+func (e *liandongProviderRejection) unauthorized() bool {
+	return e != nil && e.code == http.StatusUnauthorized
 }
 
 type liandongVerification struct {
@@ -750,6 +845,21 @@ func (c *liandongClient) createOrder(
 	if err != nil {
 		return "", &liandongCreateError{definitive: false, err: err}
 	}
+	if liandongForbiddenResponse(statusCode, responseBody) {
+		markLiandongForbidden()
+		return "", &liandongCreateError{
+			definitive: true,
+			fallback:   true,
+			err:        errors.New("liandong provider denied access (HTTP 403)"),
+		}
+	}
+	if liandongUnauthorizedResponse(statusCode, responseBody) {
+		return "", &liandongCreateError{
+			definitive:  true,
+			refreshAuth: true,
+			err:         errors.New("liandong authentication failed"),
+		}
+	}
 	if statusCode < 200 || statusCode >= 300 {
 		providerMessage := ""
 		var payload liandongCreateResponse
@@ -775,11 +885,16 @@ func (c *liandongClient) createOrder(
 	tradeNo, err := parseLiandongCreateTradeNoForBaseURL(responseBody, c.baseURL)
 	if err != nil {
 		var rejection *liandongProviderRejection
+		refreshAuth := errors.As(err, &rejection) && rejection.unauthorized()
 		browserVerification := isLiandongBrowserVerificationPage(responseBody)
+		fallback := browserVerification || liandongWebAccessBlocked(err.Error())
+		if fallback {
+			markLiandongForbidden()
+		}
 		return "", &liandongCreateError{
 			definitive:  browserVerification || errors.As(err, &rejection),
-			refreshAuth: browserVerification,
-			fallback:    browserVerification,
+			refreshAuth: browserVerification || refreshAuth,
+			fallback:    fallback,
 			err:         err,
 		}
 	}
@@ -905,9 +1020,15 @@ func (c *liandongClient) createOrderWithSettings(
 				ctx,
 				strings.TrimSpace(settingsSnapshot.MerchantToken),
 			); err != nil {
-				return "", &liandongCreateError{
-					definitive: true,
-					err:        fmt.Errorf("liandong login before order creation failed: %w", err),
+				// Login only primes cookies in credentials mode. A blocked login
+				// response must not prevent a direct Pay/order attempt, because
+				// createOrderWithSettings handles that request and its fallback.
+				if !liandongCreateErrorAllowsFallback(err) &&
+					settingsSnapshot.AuthMode != setting.LiandongAuthModeCredentials {
+					return "", &liandongCreateError{
+						definitive: true,
+						err:        fmt.Errorf("liandong login before order creation failed: %w", err),
+					}
 				}
 			}
 		}
@@ -945,9 +1066,14 @@ func (c *liandongClient) createOrderWithSettings(
 		ctx,
 		strings.TrimSpace(settingsSnapshot.MerchantToken),
 	); refreshErr != nil {
+		fallback := liandongCreateErrorAllowsFallback(err) ||
+			liandongCreateErrorAllowsFallback(refreshErr)
+		if fallback {
+			markLiandongForbidden()
+		}
 		return "", &liandongCreateError{
 			definitive: true,
-			fallback:   true,
+			fallback:   fallback,
 			err: fmt.Errorf(
 				"provider verification blocked order creation and login refresh failed: %w",
 				refreshErr,
@@ -1070,7 +1196,11 @@ func makeLiandongPaymentPage(
 			body = append(baseTag, body...)
 		}
 	}
-	return &LiandongPaymentPage{HTML: string(body)}, nil
+	documentURL := normalizedBaseURL + liandongPaymentPath
+	if resp.Request != nil && resp.Request.URL != nil {
+		documentURL = resp.Request.URL.String()
+	}
+	return &LiandongPaymentPage{HTML: string(body), documentURL: documentURL}, nil
 }
 
 func (c *liandongClient) requestPaymentPage(
@@ -1253,6 +1383,15 @@ func (c *liandongClient) queryOrderWithSettings(
 	if err != nil {
 		return nil, err
 	}
+	if liandongForbiddenResponse(statusCode, responseBody) {
+		markLiandongForbidden()
+		return nil, &liandongQueryError{
+			statusCode: http.StatusForbidden,
+			systemic:   true,
+			forbidden:  true,
+			err:        errors.New("liandong provider denied access (HTTP 403)"),
+		}
+	}
 	if statusCode < 200 || statusCode >= 300 {
 		return nil, &liandongQueryError{
 			statusCode: statusCode,
@@ -1297,6 +1436,15 @@ func (c *liandongClient) queryOrderBatch(
 	)
 	if err != nil {
 		return nil, tokenUsed, err
+	}
+	if liandongForbiddenResponse(statusCode, responseBody) {
+		markLiandongForbidden()
+		return nil, tokenUsed, &liandongQueryError{
+			statusCode: http.StatusForbidden,
+			systemic:   true,
+			forbidden:  true,
+			err:        errors.New("liandong provider denied access (HTTP 403)"),
+		}
 	}
 	if statusCode < 200 || statusCode >= 300 {
 		return nil, tokenUsed, &liandongQueryError{
@@ -1352,10 +1500,20 @@ func (c *liandongClient) doAuthenticatedJSON(
 		if err != nil {
 			return 0, nil, token, &liandongQueryError{systemic: true, err: err}
 		}
+		clearLiandongForbidden()
 		if path == liandongOrderListPath {
 			c.paymentStatusFailureState().reset()
 		}
 		return statusCode, responseBody, token, nil
+	}
+	if liandongForbiddenResponse(statusCode, responseBody) {
+		markLiandongForbidden()
+		return statusCode, responseBody, token, &liandongQueryError{
+			statusCode: http.StatusForbidden,
+			systemic:   true,
+			forbidden:  true,
+			err:        errors.New("liandong provider denied access (HTTP 403)"),
+		}
 	}
 	shouldRefreshLogin := settingsSnapshot.AuthMode == setting.LiandongAuthModeCredentials
 	if shouldRefreshLogin && path == liandongOrderListPath {
@@ -1384,6 +1542,15 @@ func (c *liandongClient) doAuthenticatedJSON(
 	retryStatus, retryBody, retryErr := c.doJSON(ctx, http.MethodPost, path, body, refreshed)
 	if retryErr != nil {
 		return 0, nil, refreshed, &liandongQueryError{systemic: true, err: retryErr}
+	}
+	if liandongForbiddenResponse(retryStatus, retryBody) {
+		markLiandongForbidden()
+		return retryStatus, retryBody, refreshed, &liandongQueryError{
+			statusCode: http.StatusForbidden,
+			systemic:   true,
+			forbidden:  true,
+			err:        errors.New("liandong provider denied access (HTTP 403)"),
+		}
 	}
 	if liandongUnauthorizedResponse(retryStatus, retryBody) {
 		return retryStatus, retryBody, refreshed, &liandongQueryError{
@@ -1440,7 +1607,20 @@ func (c *liandongClient) refreshMerchantToken(ctx context.Context, staleToken st
 	}
 	statusCode, responseBody, err := c.doJSON(ctx, http.MethodPost, liandongLoginPath, body, "")
 	if err != nil {
-		return "", &liandongQueryError{systemic: true, err: err}
+		return "", &liandongQueryError{
+			systemic:  true,
+			forbidden: strings.Contains(err.Error(), "denied access (HTTP 403)"),
+			err:       err,
+		}
+	}
+	if liandongForbiddenResponse(statusCode, responseBody) {
+		markLiandongForbidden()
+		return "", &liandongQueryError{
+			statusCode: http.StatusForbidden,
+			systemic:   true,
+			forbidden:  true,
+			err:        errors.New("liandong login denied access (HTTP 403)"),
+		}
 	}
 	if statusCode < 200 || statusCode >= 300 {
 		return "", &liandongQueryError{
@@ -1715,24 +1895,26 @@ func parseLiandongCreateTradeNoForBaseURL(
 		return tradeNo, nil
 	}
 	if payURL == "" {
-		codeIndicatesRejection := false
+		rejectionCode := 0
 		if len(payload.Code) > 0 && string(payload.Code) != "null" {
 			var numericCode int
 			if err := common.Unmarshal(payload.Code, &numericCode); err == nil {
-				codeIndicatesRejection = numericCode == 0
+				rejectionCode = numericCode
 			} else {
 				var textCode string
 				if err := common.Unmarshal(payload.Code, &textCode); err == nil {
-					codeIndicatesRejection = strings.TrimSpace(textCode) == "0"
+					if parsedCode, parseErr := strconv.Atoi(strings.TrimSpace(textCode)); parseErr == nil {
+						rejectionCode = parsedCode
+					}
 				}
 			}
 		}
-		if codeIndicatesRejection {
+		if rejectionCode == 0 || rejectionCode == http.StatusUnauthorized {
 			message := strings.TrimSpace(payload.Message)
 			if message == "" {
 				message = strings.TrimSpace(payload.MessageV2)
 			}
-			return "", &liandongProviderRejection{message: message}
+			return "", &liandongProviderRejection{message: message, code: rejectionCode}
 		}
 		return "", errors.New("provider create response has no payment URL")
 	}
@@ -2080,6 +2262,12 @@ func ListLiandongProviderGoods(
 	)
 	if err != nil {
 		return nil, err
+	}
+	if liandongForbiddenResponse(statusCode, responseBody) {
+		markLiandongForbidden()
+		return nil, common.NewMessage(
+			"Card marketplace denied access (HTTP 403). Check the configured Base URL, account login status, and outbound IP, then try again.",
+		)
 	}
 	if statusCode < 200 || statusCode >= 300 {
 		return nil, fmt.Errorf(
@@ -2445,7 +2633,6 @@ func LiandongOrderView(order *model.LiandongOrder) LiandongPaymentView {
 			)
 			if view.FallbackURL != "" {
 				view.FallbackContact = order.ContactSnapshot
-				view.IframeAllowed = false
 			}
 		}
 	}
@@ -2478,16 +2665,29 @@ func LoadLiandongPaymentPageForUser(
 	if !settingsSnapshot.Enabled {
 		return nil, errors.New("liandong payment gateway is disabled")
 	}
+	if !settingsSnapshot.IframeEnabled {
+		return &LiandongPaymentPage{
+			RedirectURL: liandongPaymentURL(settingsSnapshot.BaseURL, *order.ProviderTradeNo),
+		}, nil
+	}
 	if !liandongAuthenticationConfigured(settingsSnapshot) {
 		return nil, errors.New("liandong authentication is not configured")
 	}
-	page, err := newLiandongClientWithSettings(settingsSnapshot).loadPaymentPage(
+	client := newLiandongClientWithSettings(settingsSnapshot)
+	defer client.httpClient.CloseIdleConnections()
+	page, err := client.loadPaymentPage(
 		ctx,
 		*order.ProviderTradeNo,
 		settingsSnapshot,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if settingsSnapshot.ProxyEnabled {
+		page, err = client.embedPaymentQRCode(ctx, page)
+		if err != nil {
+			return nil, common.NewMessage("Failed to open payment page")
+		}
 	}
 
 	latestSettings, err := model.GetLiandongPaymentSettingsFromDB()
@@ -2496,6 +2696,11 @@ func LoadLiandongPaymentPageForUser(
 	}
 	if !latestSettings.Enabled {
 		return nil, errors.New("liandong payment gateway was disabled")
+	}
+	if !latestSettings.IframeEnabled {
+		return &LiandongPaymentPage{
+			RedirectURL: liandongPaymentURL(latestSettings.BaseURL, *order.ProviderTradeNo),
+		}, nil
 	}
 	return page, nil
 }
@@ -2652,6 +2857,27 @@ func createLiandongPayment(
 		return nil, errors.New("Liandong gateway disabled")
 	}
 
+	fallbackURL := liandongProductURL(latestSettings.BaseURL, order.GoodsKeySnapshot)
+	if fallbackURL != "" && liandongForbiddenBackoffRemaining() > 0 {
+		if markErr := model.MarkLiandongCreateResult(
+			order.LocalTradeNo,
+			nil,
+			model.LiandongPaymentStatusPending,
+			"card marketplace access verification backoff active",
+		); markErr != nil {
+			return nil, errors.New("Failed to create payment order")
+		}
+
+		persisted, loadErr := model.GetLiandongOrder(order.LocalTradeNo)
+		if loadErr != nil {
+			return nil, errors.New("Failed to create payment order")
+		}
+		WakeSystemTaskRunner()
+		view := LiandongOrderView(persisted)
+		view.FallbackURL = fallbackURL
+		return &view, nil
+	}
+
 	providerTradeNo, createErr := client.createOrderWithSettings(
 		withLiandongMonitor(ctx, "user_order_create", order.LocalTradeNo),
 		order.GoodsKeySnapshot,
@@ -2661,6 +2887,9 @@ func createLiandongPayment(
 	)
 	if createErr != nil {
 		var typedErr *liandongCreateError
+		if liandongWebAccessBlocked(createErr.Error()) {
+			markLiandongForbidden()
+		}
 		diagnostic := sanitizeLiandongDiagnostic(
 			createErr.Error(),
 			order.GoodsKeySnapshot,
@@ -2674,9 +2903,7 @@ func createLiandongPayment(
 		if diagnostic == "" {
 			diagnostic = "liandong provider returned no diagnostic information"
 		}
-		if errors.As(createErr, &typedErr) &&
-			typedErr.fallback &&
-			liandongProductURL(latestSettings.BaseURL, order.GoodsKeySnapshot) != "" {
+		if fallbackURL != "" && liandongCreateErrorAllowsFallback(createErr) {
 			if markErr := model.MarkLiandongCreateResult(
 				order.LocalTradeNo,
 				nil,
@@ -2685,10 +2912,13 @@ func createLiandongPayment(
 			); markErr != nil {
 				return nil, errors.New("Failed to create payment order")
 			}
-			order.PaymentStatus = model.LiandongPaymentStatusPending
-			order.LastError = diagnostic
+			persisted, loadErr := model.GetLiandongOrder(order.LocalTradeNo)
+			if loadErr != nil {
+				return nil, errors.New("Failed to create payment order")
+			}
 			WakeSystemTaskRunner()
-			view := LiandongOrderView(order)
+			view := LiandongOrderView(persisted)
+			view.FallbackURL = fallbackURL
 			return &view, nil
 		}
 
@@ -2706,6 +2936,11 @@ func createLiandongPayment(
 				order.LocalTradeNo,
 				markErr,
 			))
+		}
+		var queryErr *liandongQueryError
+		if errors.As(createErr, &queryErr) && queryErr.isForbidden() ||
+			liandongWebAccessBlocked(diagnostic) {
+			return nil, common.NewMessage("Failed to create payment order")
 		}
 		return nil, errors.New("Failed to create payment order")
 	}
@@ -2734,6 +2969,7 @@ func createLiandongPayment(
 	if latestSettings.PaymentProbeEnabled {
 		scheduleLiandongPaymentProbe(order)
 	}
+	clearLiandongForbidden()
 	WakeSystemTaskRunner()
 	view := LiandongOrderView(order)
 	return &view, nil
@@ -3388,6 +3624,12 @@ func RunLiandongReconcileOnce(ctx context.Context) (map[string]int, error) {
 
 func runLiandongReconcileOnce(ctx context.Context, client *liandongClient) (map[string]int, error) {
 	result := map[string]int{"processed": 0, "paid": 0, "fulfilled": 0, "failed": 0}
+	if remaining := liandongForbiddenBackoffRemaining(); remaining > 0 {
+		return result, fmt.Errorf(
+			"card marketplace access verification backoff active for %s",
+			remaining.Round(time.Second),
+		)
+	}
 	settingsSnapshot, err := model.GetLiandongPaymentSettingsFromDB()
 	if err != nil {
 		return result, err

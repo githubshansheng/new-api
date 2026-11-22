@@ -42,6 +42,18 @@ const MODELS_SECTIONS = [
       <GlobalSettingsCard
         defaultValues={{
           global: {
+            upstream_model_mapping_visible:
+              settings['global.upstream_model_mapping_visible'] ?? true,
+            site_model_mapping_visible:
+              settings['global.site_model_mapping_visible'] ?? true,
+            upstream_model_mapping_whitelist: formatJsonForEditor(
+              settings['global.upstream_model_mapping_whitelist'],
+              '[]'
+            ),
+            site_model_mapping_whitelist: formatJsonForEditor(
+              settings['global.site_model_mapping_whitelist'],
+              '[]'
+            ),
             pass_through_request_enabled:
               settings['global.pass_through_request_enabled'],
             thinking_model_blacklist: formatJsonForEditor(

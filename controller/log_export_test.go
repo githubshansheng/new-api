@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/alicebob/miniredis/v2"
@@ -148,6 +149,46 @@ func TestLogExportDatabaseMatrix(t *testing.T) {
 			assert.Equal(t, true, all[3]["success"])
 		})
 	}
+}
+
+func TestLogVisibilityListAndExportAdminExemption(t *testing.T) {
+	db, _ := newAuditTestDatabase(t, "sqlite", "")
+	useLogExportDatabases(t, db, db, common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.User{}))
+	settings := model_setting.GetGlobalSettings()
+	previous := *settings
+	t.Cleanup(func() { *settings = previous })
+	settings.UpstreamModelMappingVisible = false
+	settings.SiteModelMappingVisible = false
+	settings.UpstreamModelMappingWhitelist = nil
+	settings.SiteModelMappingWhitelist = nil
+	logSettings := operation_setting.GetLogSetting()
+	previousExport := logSettings.UserExportEnabled
+	logSettings.UserExportEnabled = true
+	t.Cleanup(func() { logSettings.UserExportEnabled = previousExport })
+	require.NoError(t, db.Create(&model.Log{UserId: 7, TokenId: 17, CreatedAt: time.Now().Unix(), ModelName: "alias", Other: `{"upstream_model_name":"private-site","is_model_mapped":true,"response_model":{"requested_model":"alias","upstream_model":"private-site","returned_model":"private-provider"}}`}).Error)
+	require.NoError(t, db.Create(&model.User{Id: 7, Username: "visibility-owner", Role: common.RoleCommonUser}).Error)
+	for _, role := range []int{common.RoleCommonUser, common.RoleAdminUser, common.RoleRootUser} {
+		require.NoError(t, db.Model(&model.User{}).Where("id = ?", 7).Update("role", role).Error)
+		tokenHandler := func(c *gin.Context) {
+			c.Set("token_id", 17)
+			c.Set("role", 0) // Relay tokens do not grant dashboard permissions.
+			GetLogByKey(c)
+		}
+		for _, handler := range []gin.HandlerFunc{GetUserLogs, ExportUserLogs, tokenHandler} {
+			response := callLogHandler(t, handler, 7, role, "")
+			if handlerResponse, ok := response[0]["success"]; ok {
+				require.Equal(t, true, handlerResponse)
+			}
+			encoded, err := common.Marshal(response)
+			require.NoError(t, err)
+			assert.Equal(t, role >= common.RoleAdminUser, strings.Contains(string(encoded), "private-site"))
+			assert.Equal(t, role >= common.RoleAdminUser, strings.Contains(string(encoded), "private-provider"))
+		}
+	}
+	stored := model.Log{}
+	require.NoError(t, db.First(&stored).Error)
+	assert.Contains(t, stored.Other, "private-provider")
 }
 
 func TestLogExportRules(t *testing.T) {

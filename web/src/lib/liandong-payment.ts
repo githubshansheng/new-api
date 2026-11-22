@@ -141,6 +141,7 @@ export function localizeLiandongMessage(
   const proxyConnectionErrorPrefixes = [
     'Proxy connection failed:',
     'SOCKS5 proxy connection failed:',
+    'Card marketplace proxy connection failed:',
   ]
   const proxyConnectionErrorPrefix = proxyConnectionErrorPrefixes.find(
     (prefix) => normalized.startsWith(prefix)
@@ -150,6 +151,24 @@ export function localizeLiandongMessage(
     return `${t('Proxy connection failed')}${detail ? `: ${detail}` : ''}`
   }
 
+  if (
+    normalized.startsWith(
+      'Card marketplace denied access (HTTP 403).'
+    )
+  ) {
+    return t(
+      'Card marketplace denied access (HTTP 403). Check the configured Base URL, account login status, and outbound IP, then try again.'
+    )
+  }
+
   const messageKey = liandongMessageAliases[normalized] || normalized
-  return i18next.exists(messageKey) ? t(messageKey) : t(fallbackKey)
+  if (i18next.exists(messageKey)) return t(messageKey)
+  if (
+    /provider|upstream|HTTP|TLS|proxy|network|timeout|certificate|connection|denied access|response is invalid/i.test(
+      normalized
+    )
+  ) {
+    return normalized
+  }
+  return t(fallbackKey)
 }

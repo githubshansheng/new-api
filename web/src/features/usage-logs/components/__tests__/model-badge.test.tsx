@@ -28,6 +28,25 @@ import { getLobeIconNames } from '@/lib/lobe-icon'
 
 import { ModelBadge } from '../model-badge'
 
+it.each([
+  { requested_model: 'alias', upstream_model: 'site-model' },
+  { requested_model: 'alias', returned_model: 'provider-model' },
+])(
+  'shows only the model fields supplied by the user projection',
+  async (responseModel) => {
+    const user = userEvent.setup()
+    render(<ModelBadge modelName='alias' responseModel={responseModel} />)
+    expect(screen.queryByText(/^Response model:/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Model: alias' }))
+    expect(screen.queryByText('Upstream Model') !== null).toBe(
+      'upstream_model' in responseModel
+    )
+    expect(screen.queryByText('Response Model') !== null).toBe(
+      'returned_model' in responseModel
+    )
+  }
+)
+
 const providers = [
   {
     category: 'Perplexity',

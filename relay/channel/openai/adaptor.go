@@ -314,7 +314,8 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			recordReasoningDiagnostics(c, info, diagnostics)
 			return err
 		}
-		if !preserveSuffix {
+		// The host helper has already resolved mapped-model precedence.
+		if !preserveSuffix && info.ReasoningState() == nil {
 			if err := mergeEffortSuffix(info.UpstreamModelName); err != nil {
 				return nil, kitreasoning.AsClientError(err)
 			}
@@ -400,7 +401,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		if err := mergeSuffix(info.UpstreamModelName, effort); err != nil {
 			return nil, kitreasoning.AsClientError(err)
 		}
-		if !preserveSuffix && info.OriginModelName != info.UpstreamModelName {
+		if !preserveSuffix && info.ReasoningState() == nil && info.OriginModelName != info.UpstreamModelName {
 			originEffort, _ := reasoning.ParseOpenAIReasoningEffortFromModelSuffix(info.OriginModelName)
 			if err := mergeSuffix(info.OriginModelName, originEffort); err != nil {
 				return nil, kitreasoning.AsClientError(err)
@@ -723,7 +724,7 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if err := mergeSuffix(request.Model, effort); err != nil {
 		return nil, kitreasoning.AsClientError(err)
 	}
-	if !preserveSuffix && info != nil && info.OriginModelName != request.Model {
+	if !preserveSuffix && info != nil && info.ReasoningState() == nil && info.OriginModelName != request.Model {
 		originEffort, _ := reasoning.ParseOpenAIReasoningEffortFromModelSuffix(info.OriginModelName)
 		if err := mergeSuffix(info.OriginModelName, originEffort); err != nil {
 			return nil, kitreasoning.AsClientError(err)

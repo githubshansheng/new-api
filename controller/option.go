@@ -207,6 +207,30 @@ func UpdateOption(c *gin.Context) {
 		option.Value = fmt.Sprintf("%v", option.Value)
 	}
 	switch option.Key {
+	case "global.upstream_model_mapping_visible", "global.site_model_mapping_visible":
+		if option.Value != "true" && option.Value != "false" {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
+			return
+		}
+	case "global.upstream_model_mapping_whitelist", "global.site_model_mapping_whitelist":
+		var entries []string
+		if err := common.UnmarshalJsonStr(option.Value.(string), &entries); err != nil || entries == nil {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Model whitelist must be a JSON array of non-empty strings"))
+			return
+		}
+		for i, entry := range entries {
+			entries[i] = strings.TrimSpace(entry)
+			if entries[i] == "" {
+				common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Model whitelist must be a JSON array of non-empty strings"))
+				return
+			}
+		}
+		encoded, err := common.Marshal(entries)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		option.Value = string(encoded)
 	case "QuotaForInviter", "QuotaForInvitee":
 		if isPositiveOptionValue(option.Value.(string)) && !operation_setting.IsPaymentComplianceConfirmed() {
 			common.ApiErrorT(c, "Payment, redemption, subscription, and invitation reward features are disabled. The administrator must confirm compliance terms before enabling them.")

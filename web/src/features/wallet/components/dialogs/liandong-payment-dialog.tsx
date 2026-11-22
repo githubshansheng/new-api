@@ -19,7 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   CheckCircle2,
   Clock3,
-  Copy,
   ExternalLink,
   Loader2,
   PackageOpen,
@@ -31,6 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { CopyButton } from '@/components/copy-button'
 import { Dialog } from '@/components/dialog'
 import { StatusBadge, type StatusVariant } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -40,6 +40,7 @@ import {
   formatResetPeriod,
 } from '@/features/subscriptions/lib/format'
 import type { SubscriptionPlan } from '@/features/subscriptions/types'
+import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import {
   formatLiandongAmount,
@@ -74,7 +75,7 @@ const terminalPaymentStatuses = new Set([
 const terminalFulfillmentStatuses = new Set(['fulfilled', 'review_required'])
 
 const liandongIframeSandboxPermissions =
-  'allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts'
+  'allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-scripts'
 
 function liandongPaymentDocumentURL(html: string): string {
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
@@ -140,6 +141,10 @@ export function LiandongPaymentDialog({
 }: Props) {
   const { t } = useTranslation()
   const { currency } = useSystemConfig()
+  const { copyToClipboard } = useCopyToClipboard({
+    successMessage: t('Payment contact copied'),
+    errorMessage: t('Copy failed. Please copy the payment contact manually.'),
+  })
   const [order, setOrder] = useState<LiandongPaymentView | null>(null)
   const [creating, setCreating] = useState(false)
   const [closing, setClosing] = useState(false)
@@ -153,6 +158,7 @@ export function LiandongPaymentDialog({
   const [paymentPageLoading, setPaymentPageLoading] = useState(false)
   const [paymentPageError, setPaymentPageError] = useState('')
   const [paymentPageAttempt, setPaymentPageAttempt] = useState(0)
+  const [paymentDocumentURL, setPaymentDocumentURL] = useState<string>()
   const successHandledRef = useRef(false)
   const closeRequestedRef = useRef(false)
   const closingRef = useRef(false)
@@ -179,10 +185,28 @@ export function LiandongPaymentDialog({
         }
       : null
   const paymentFrameURL = useMemo(() => {
+    if (order?.fallback_url) return order.fallback_url
     if (paymentPage?.redirect_url) return paymentPage.redirect_url
     if (paymentPage?.html) return liandongPaymentDocumentURL(paymentPage.html)
     return undefined
-  }, [paymentPage?.html, paymentPage?.redirect_url])
+  }, [order?.fallback_url, paymentPage?.html, paymentPage?.redirect_url])
+  const paymentLinkURL =
+    order?.fallback_url || paymentPage?.redirect_url || paymentDocumentURL
+
+  useEffect(() => {
+    if (!open || !paymentPage?.html || paymentPage.redirect_url) {
+      setPaymentDocumentURL(undefined)
+      return
+    }
+    // Keep provider HTML inside an opaque-origin frame, including in a new tab.
+    const frameURL = liandongPaymentDocumentURL(paymentPage.html)
+    const document = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><style>html,body,iframe{width:100%;height:100%;margin:0;border:0}</style></head><body><iframe title="Payment" sandbox="${liandongIframeSandboxPermissions}" referrerpolicy="no-referrer" src="${frameURL}"></iframe></body></html>`
+    const objectURL = URL.createObjectURL(
+      new Blob([document], { type: 'text/html;charset=utf-8' })
+    )
+    setPaymentDocumentURL(objectURL)
+    return () => URL.revokeObjectURL(objectURL)
+  }, [open, paymentPage?.html, paymentPage?.redirect_url])
 
   useEffect(() => {
     orderRef.current = order
@@ -319,9 +343,11 @@ export function LiandongPaymentDialog({
     createSessionRef.current = session
 
     successHandledRef.current = false
+    orderRef.current = null
     setOrder(null)
     setError('')
     setPaymentPage(null)
+    setPaymentDocumentURL(undefined)
     setPaymentPageError('')
     setCreating(true)
 
@@ -478,6 +504,8 @@ export function LiandongPaymentDialog({
       return
     }
 
+    setPaymentPage(null)
+    setPaymentDocumentURL(undefined)
     void loadPaymentPage(paymentURL)
     return () => {
       paymentPageSessionRef.current += 1
@@ -491,60 +519,9 @@ export function LiandongPaymentDialog({
     paymentPageAttempt,
   ])
 
-  const copyFallbackContact = async () => {
-    if (!order?.fallback_contact) return
-    try {
-      if (!navigator.clipboard) throw new Error('Clipboard API unavailable')
-      await navigator.clipboard.writeText(order.fallback_contact)
-      toast.success(t('Payment contact copied'))
-    } catch {
-      toast.error(t('Copy failed. Please copy the payment contact manually.'))
-    }
-  }
-
-  const openPaymentPage = async () => {
-    if (!order) return
-    const popup = window.open('', '_blank')
-    if (!popup) {
-      toast.error(t('Operation failed'))
-      return
-    }
-    popup.opener = null
-
-    if (order.fallback_url) {
-      await copyFallbackContact()
-      popup.location.replace(order.fallback_url)
-      return
-    }
-
-    if (!order.payment_url) {
-      popup.close()
-      return
-    }
-
-    const page = paymentPage || (await loadPaymentPage(order.payment_url))
-    if (!page) {
-      popup.close()
-      return
-    }
-    if (page.redirect_url) {
-      popup.location.replace(page.redirect_url)
-      return
-    }
-    if (page.html) {
-      popup.document.open()
-      popup.document.write(
-        '<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><style>html,body,iframe{width:100%;height:100%;margin:0;border:0}</style></head><body><iframe title="Payment" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts" referrerpolicy="no-referrer"></iframe></body></html>'
-      )
-      popup.document.close()
-      const paymentFrame = popup.document.querySelector('iframe')
-      if (paymentFrame) paymentFrame.src = liandongPaymentDocumentURL(page.html)
-    }
-  }
-
   const showIframe =
     order?.iframe_allowed === true &&
-    !!order.payment_url &&
+    !!(order.payment_url || order.fallback_url) &&
     order.payment_status === 'pending'
   const showPaymentButton =
     !!order?.payment_url && order.payment_status === 'pending' && !showIframe
@@ -591,12 +568,26 @@ export function LiandongPaymentDialog({
               {t('Refresh status')}
             </Button>
           )}
-          {(order?.payment_url || order?.fallback_url) && (
-            <Button variant='outline' onClick={() => void openPaymentPage()}>
-              <ExternalLink className='h-4 w-4' />
-              {t('Open payment page')}
-            </Button>
-          )}
+          {order?.payment_status === 'pending' &&
+            (order.payment_url || order.fallback_url) && (
+              <Button
+                variant='outline'
+                role={paymentLinkURL ? 'link' : undefined}
+                disabled={!paymentLinkURL || paymentPageLoading}
+                render={
+                  paymentLinkURL ? (
+                    <a
+                      href={paymentLinkURL}
+                      target='_blank'
+                      rel='noopener noreferrer'
+                    />
+                  ) : undefined
+                }
+              >
+                <ExternalLink className='h-4 w-4' />
+                {t('Open payment page')}
+              </Button>
+            )}
           <Button onClick={() => void closeDialog()} disabled={closing}>
             {closing && <Loader2 className='h-4 w-4 animate-spin' />}
             {isFulfilled ? t('Done') : t('Close')}
@@ -797,17 +788,28 @@ export function LiandongPaymentDialog({
                 <code className='bg-muted min-w-0 flex-1 rounded px-3 py-2 font-mono text-sm break-all'>
                   {order.fallback_contact}
                 </code>
-                <Button
+                <CopyButton
+                  value={order.fallback_contact || ''}
                   variant='outline'
-                  size='icon'
-                  title={t('Copy')}
                   aria-label={t('Copy')}
-                  onClick={() => void copyFallbackContact()}
-                >
-                  <Copy className='h-4 w-4' />
-                </Button>
+                />
               </div>
-              <Button className='w-full' onClick={() => void openPaymentPage()}>
+              <Button
+                className='w-full'
+                role='link'
+                render={
+                  <a
+                    href={order.fallback_url}
+                    target='_blank'
+                    rel='noopener noreferrer'
+                  />
+                }
+                onClick={() => {
+                  if (order.fallback_contact) {
+                    void copyToClipboard(order.fallback_contact)
+                  }
+                }}
+              >
                 <ExternalLink className='h-4 w-4' />
                 {t('Copy contact and open payment page')}
               </Button>
@@ -821,20 +823,24 @@ export function LiandongPaymentDialog({
             </div>
           )}
 
-          {showIframe && !paymentPageLoading && paymentPageError && (
+          {!paymentPageLoading && paymentPageError && (
             <Alert variant='destructive'>
               <TriangleAlert className='h-4 w-4' />
               <AlertDescription>{paymentPageError}</AlertDescription>
             </Alert>
           )}
 
-          {showIframe && !paymentPageLoading && paymentPage && (
+          {showIframe && !paymentPageLoading && paymentFrameURL && (
             <iframe
               src={paymentFrameURL}
               title={t('Liandong payment page')}
               className='h-full min-h-[420px] w-full rounded-md border bg-white'
               referrerPolicy='no-referrer'
-              sandbox={liandongIframeSandboxPermissions}
+              sandbox={
+                order.fallback_url || paymentPage?.redirect_url
+                  ? `${liandongIframeSandboxPermissions} allow-same-origin`
+                  : liandongIframeSandboxPermissions
+              }
             />
           )}
 
@@ -844,7 +850,19 @@ export function LiandongPaymentDialog({
               <p className='text-muted-foreground text-sm'>
                 {t('Open the payment page to scan the QR code')}
               </p>
-              <Button onClick={() => void openPaymentPage()}>
+              <Button
+                role={paymentLinkURL ? 'link' : undefined}
+                disabled={!paymentLinkURL || paymentPageLoading}
+                render={
+                  paymentLinkURL ? (
+                    <a
+                      href={paymentLinkURL}
+                      target='_blank'
+                      rel='noopener noreferrer'
+                    />
+                  ) : undefined
+                }
+              >
                 <ExternalLink className='h-4 w-4' />
                 {t('Open payment page')}
               </Button>

@@ -112,10 +112,14 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 	}
 }
 
-func formatUserLogs(logs []*Log, startIdx int) {
+func formatUserLogs(logs []*Log, startIdx int, viewerRole ...int) {
+	role := common.RoleCommonUser
+	if len(viewerRole) > 0 {
+		role = viewerRole[0]
+	}
 	for i := range logs {
 		logs[i].ChannelName = ""
-		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityUser)
+		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityUser, logs[i].ModelName, role)
 	}
 	assignDisplayLogIds(logs, startIdx)
 }
@@ -124,7 +128,7 @@ func formatUserLogs(logs []*Log, startIdx int) {
 // admin_info. Root callers must not pass their results through this formatter.
 func FormatAdminLogs(logs []*Log) {
 	for i := range logs {
-		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityAdmin)
+		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityAdmin, logs[i].ModelName, common.RoleAdminUser)
 	}
 }
 
@@ -132,17 +136,17 @@ func FormatAdminLogs(logs []*Log) {
 // without removing root-only diagnostics.
 func FormatRootLogs(logs []*Log) {
 	for i := range logs {
-		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityRoot)
+		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityRoot, logs[i].ModelName, common.RoleRootUser)
 	}
 }
 
-func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
+func GetLogByTokenId(tokenId int, viewerRole int) (logs []*Log, err error) {
 	order := "id desc"
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		order = clickHouseLogOrder("")
 	}
 	err = LOG_DB.Model(&Log{}).Where("token_id = ?", tokenId).Order(order).Limit(common.MaxRecentItems).Find(&logs).Error
-	formatUserLogs(logs, 0)
+	formatUserLogs(logs, 0, viewerRole)
 	return logs, err
 }
 
@@ -593,7 +597,7 @@ func GetAllLogs(filter LogFilter, startIdx int, num int) (logs []*Log, total int
 
 const logSearchCountLimit = 10000
 
-func GetUserLogs(userId int, filter LogFilter, startIdx int, num int) (logs []*Log, total int64, err error) {
+func GetUserLogs(userId int, filter LogFilter, startIdx int, num int, viewerRole ...int) (logs []*Log, total int64, err error) {
 	tx, err := filter.apply(LOG_DB.Where("logs.user_id = ?", userId))
 	if err != nil {
 		return nil, 0, err
@@ -613,7 +617,7 @@ func GetUserLogs(userId int, filter LogFilter, startIdx int, num int) (logs []*L
 		return nil, 0, common.NewMessage("Failed to query logs")
 	}
 
-	formatUserLogs(logs, startIdx)
+	formatUserLogs(logs, startIdx, viewerRole...)
 	return logs, total, err
 }
 
@@ -641,14 +645,14 @@ func StreamAllLogs(ctx context.Context, filter LogFilter, role int, fn func(*Log
 			}
 			log.ChannelName = name
 		}
-		log.Other = formatLogOtherJSON(log.Other, visibility)
+		log.Other = formatLogOtherJSON(log.Other, visibility, log.ModelName, role)
 		return fn(log)
 	})
 }
 
 // StreamUserLogs is StreamAllLogs for one user's own logs, shaped like the
 // user log list.
-func StreamUserLogs(ctx context.Context, userId int, filter LogFilter, fn func(*Log) error) error {
+func StreamUserLogs(ctx context.Context, userId int, filter LogFilter, viewerRole int, fn func(*Log) error) error {
 	tx, err := filter.apply(LOG_DB.WithContext(ctx).Where("logs.user_id = ?", userId))
 	if err != nil {
 		return err
@@ -658,7 +662,7 @@ func StreamUserLogs(ctx context.Context, userId int, filter LogFilter, fn func(*
 		count++
 		log.Id = count
 		log.ChannelName = ""
-		log.Other = formatLogOtherJSON(log.Other, logOtherVisibilityUser)
+		log.Other = formatLogOtherJSON(log.Other, logOtherVisibilityUser, log.ModelName, viewerRole)
 		return fn(log)
 	})
 }

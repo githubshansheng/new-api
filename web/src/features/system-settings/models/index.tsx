@@ -25,6 +25,10 @@ import {
 } from './section-registry.tsx'
 
 const defaultModelSettings: ModelSettings = {
+  'global.upstream_model_mapping_visible': true,
+  'global.site_model_mapping_visible': true,
+  'global.upstream_model_mapping_whitelist': '[]',
+  'global.site_model_mapping_whitelist': '[]',
   'global.pass_through_request_enabled': false,
   'global.thinking_model_blacklist': '[]',
   'global.chat_completions_to_responses_policy': '{}',

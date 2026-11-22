@@ -35,6 +35,8 @@ export function isResponseModelMismatch(
   observation: ResponseModelObservation | undefined
 ): boolean {
   if (!observation) return false
+  // A redacted upstream model cannot be used to judge a mismatch.
+  if (observation.upstream_model === undefined) return false
   const returned = (observation.returned_model ?? '').toLowerCase()
   if (returned.trim() === '') return false
   for (const candidate of [

@@ -1,13 +1,54 @@
 package model
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestModelMappingVisibilityInUserLogs(t *testing.T) {
+	settings := model_setting.GetGlobalSettings()
+	previous := *settings
+	t.Cleanup(func() { *settings = previous })
+	const other = `{"is_model_mapped":true,"upstream_model_name":"site-secret","public_id":9007199254740993,"response_model":{"requested_model":"alias","upstream_model":"site-secret","returned_model":"provider-secret"},"admin_info":{"x":1}}`
+	for _, tc := range []struct {
+		name                     string
+		upstream, site           bool
+		upstreamAllow, siteAllow []string
+		role                     int
+		wantUpstream, wantSite   bool
+	}{
+		{"both visible", true, true, nil, nil, common.RoleCommonUser, true, true},
+		{"upstream hidden", false, true, nil, nil, common.RoleCommonUser, false, true},
+		{"site hidden", true, false, nil, nil, common.RoleCommonUser, true, false},
+		{"both hidden", false, false, nil, nil, common.RoleCommonUser, false, false},
+		{"upstream whitelist only", false, false, []string{"alias"}, nil, common.RoleCommonUser, true, false},
+		{"site whitelist only", false, false, nil, []string{"alias"}, common.RoleCommonUser, false, true},
+		{"whitelists are exact request names", false, false, []string{"provider-secret", "ali"}, []string{"site-secret", "alias-other"}, common.RoleCommonUser, false, false},
+		{"admin self view", false, false, nil, nil, common.RoleAdminUser, true, true},
+		{"root self view", false, false, nil, nil, common.RoleRootUser, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings.UpstreamModelMappingVisible, settings.SiteModelMappingVisible = tc.upstream, tc.site
+			settings.UpstreamModelMappingWhitelist, settings.SiteModelMappingWhitelist = tc.upstreamAllow, tc.siteAllow
+			logs := []*Log{{ModelName: "alias", Other: other}}
+			formatUserLogs(logs, 0, tc.role)
+			assert.Equal(t, tc.wantUpstream, strings.Contains(logs[0].Other, "provider-secret"))
+			assert.Equal(t, tc.wantSite, strings.Contains(logs[0].Other, "site-secret"))
+			assert.Equal(t, tc.wantSite, strings.Contains(logs[0].Other, "is_model_mapped"))
+			assert.Contains(t, logs[0].Other, `9007199254740993`)
+			assert.NotContains(t, logs[0].Other, "admin_info")
+			if !tc.wantUpstream && !tc.wantSite {
+				assert.NotContains(t, logs[0].Other, "response_model")
+			}
+		})
+	}
+}
 
 // TestFormatUserLogsStripsQuotaSaturation verifies the admin-only quota
 // saturation marker (nested under other.admin_info) is removed for non-admin

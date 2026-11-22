@@ -89,6 +89,20 @@ const jsonString = z.string().refine((value) => {
 
 const schema = z.object({
   global: z.object({
+    upstream_model_mapping_visible: z.boolean().default(true),
+    site_model_mapping_visible: z.boolean().default(true),
+    upstream_model_mapping_whitelist: jsonString
+      .refine(
+        isModelWhitelist,
+        'Model whitelist must be a JSON array of non-empty strings'
+      )
+      .default('[]'),
+    site_model_mapping_whitelist: jsonString
+      .refine(
+        isModelWhitelist,
+        'Model whitelist must be a JSON array of non-empty strings'
+      )
+      .default('[]'),
     pass_through_request_enabled: z.boolean(),
     thinking_model_blacklist: jsonString,
     chat_completions_to_responses_policy: jsonString,
@@ -103,6 +117,10 @@ type GlobalModelSettingsFormValues = z.output<typeof schema>
 type GlobalModelSettingsFormInput = z.input<typeof schema>
 
 type FlatGlobalModelSettings = {
+  'global.upstream_model_mapping_visible': boolean
+  'global.site_model_mapping_visible': boolean
+  'global.upstream_model_mapping_whitelist': string
+  'global.site_model_mapping_whitelist': string
   'global.pass_through_request_enabled': boolean
   'global.thinking_model_blacklist': string
   'global.chat_completions_to_responses_policy': string
@@ -113,6 +131,18 @@ type FlatGlobalModelSettings = {
 const flattenGlobalValues = (
   values: GlobalModelSettingsFormValues
 ): FlatGlobalModelSettings => ({
+  'global.upstream_model_mapping_visible':
+    values.global.upstream_model_mapping_visible ?? true,
+  'global.site_model_mapping_visible':
+    values.global.site_model_mapping_visible ?? true,
+  'global.upstream_model_mapping_whitelist': normalizeJsonText(
+    values.global.upstream_model_mapping_whitelist,
+    '[]'
+  ),
+  'global.site_model_mapping_whitelist': normalizeJsonText(
+    values.global.site_model_mapping_whitelist,
+    '[]'
+  ),
   'global.pass_through_request_enabled':
     values.global.pass_through_request_enabled,
   'global.thinking_model_blacklist': normalizeJsonText(
@@ -134,8 +164,22 @@ function normalizeJsonText(value: string, fallback: string) {
   return trimmed ? trimmed : fallback
 }
 
+function isModelWhitelist(value: string): boolean {
+  try {
+    const models: unknown = JSON.parse(value.trim() || '[]')
+    return (
+      Array.isArray(models) &&
+      models.every(
+        (model) => typeof model === 'string' && model.trim().length > 0
+      )
+    )
+  } catch {
+    return false
+  }
+}
+
 type GlobalSettingsCardProps = {
-  defaultValues: GlobalModelSettingsFormValues
+  defaultValues: GlobalModelSettingsFormInput
 }
 
 export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
@@ -158,7 +202,7 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
   const pingEnabled = form.watch('general_setting.ping_interval_enabled')
 
   const onSubmit = async (values: GlobalModelSettingsFormValues) => {
-    const flattenedDefaults = flattenGlobalValues(defaultValues)
+    const flattenedDefaults = flattenGlobalValues(schema.parse(defaultValues))
     const flattenedValues = flattenGlobalValues(values)
     const updates = Object.entries(flattenedValues).filter(
       ([key, value]) =>
@@ -186,6 +230,78 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
             onSave={form.handleSubmit(onSubmit)}
             isSaving={updateOption.isPending}
           />
+          {(['upstream', 'site'] as const).map((scope) => (
+            <div key={scope} className='space-y-3'>
+              <FormField
+                control={form.control}
+                name={`global.${scope}_model_mapping_visible`}
+                render={({ field }) => (
+                  <SettingsSwitchItem>
+                    <SettingsSwitchContent>
+                      <FormLabel>
+                        {scope === 'upstream'
+                          ? t('Upstream model mapping visible')
+                          : t('Site model mapping visible')}
+                      </FormLabel>
+                      <FormDescription>
+                        {scope === 'upstream'
+                          ? t(
+                              'Show the actual model returned by the upstream provider in usage records.'
+                            )
+                          : t(
+                              'Show the model mapping configured on this site in usage records.'
+                            )}
+                      </FormDescription>
+                    </SettingsSwitchContent>
+                    <FormControl>
+                      <Switch
+                        checked={field.value ?? true}
+                        onCheckedChange={field.onChange}
+                        disabled={updateOption.isPending}
+                      />
+                    </FormControl>
+                  </SettingsSwitchItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name={`global.${scope}_model_mapping_whitelist`}
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>
+                      {scope === 'upstream'
+                        ? t('Upstream model visibility whitelist')
+                        : t('Site model visibility whitelist')}
+                    </FormLabel>
+                    <FormControl>
+                      <JsonCodeEditor
+                        value={field.value ?? '[]'}
+                        onChange={field.onChange}
+                        name={field.name}
+                        onBlur={field.onBlur}
+                        textareaRef={field.ref}
+                        ariaLabel={
+                          scope === 'upstream'
+                            ? t('Upstream model visibility whitelist')
+                            : t('Site model visibility whitelist')
+                        }
+                        placeholder='["gpt-6.2-sol"]'
+                        heightClassName='h-24 min-h-24 max-h-24'
+                        disabled={updateOption.isPending}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+          ))}
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'When visibility is off, only the exact requested model names in its whitelist remain visible in usage records and exports. Administrators are always exempt.'
+            )}
+          </p>
+          <Separator />
           <FormField
             control={form.control}
             name='global.pass_through_request_enabled'

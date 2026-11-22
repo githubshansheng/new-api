@@ -232,7 +232,7 @@ export function LiandongPaymentSection() {
   const [orderTotal, setOrderTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [orderPageSize, setOrderPageSize] = useState(DEFAULT_PAGE_SIZE)
-  const [orderStatus, setOrderStatus] = useState('paid')
+  const [orderStatus, setOrderStatus] = useState('all')
   const [keyword, setKeyword] = useState('')
   const [searchKeyword, setSearchKeyword] = useState('')
   const [username, setUsername] = useState('')
@@ -331,7 +331,7 @@ export function LiandongPaymentSection() {
         ] = await Promise.all([
           getLiandongSettings(),
           listLiandongProducts(),
-          listLiandongOrders(1, DEFAULT_PAGE_SIZE, '', 'paid'),
+          listLiandongOrders(1, DEFAULT_PAGE_SIZE, '', 'all'),
           getAdminPlans(),
         ])
         if (cancelled) return

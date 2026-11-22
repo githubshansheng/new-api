@@ -410,6 +410,21 @@ func CreateLiandongOrderWithTimeout(
 		}
 
 		now := common.GetTimestamp()
+		if err := tx.Model(&LiandongOrder{}).
+			Where("user_id = ? AND payment_status IN ?", userID, []string{
+				LiandongPaymentStatusCreating,
+				LiandongPaymentStatusPending,
+				LiandongPaymentStatusCreateUnknown,
+			}).
+			Updates(map[string]any{
+				"payment_status":          LiandongPaymentStatusClosed,
+				"closed_reason":           "replaced by a new payment order",
+				"check_lock_until":        0,
+				"consecutive_error_count": 0,
+				"updated_at":              now,
+			}).Error; err != nil {
+			return err
+		}
 		if err := tx.Model(&LiandongProductInventoryCode{}).
 			Where(
 				"reserved_user_id = ? AND status = ?",

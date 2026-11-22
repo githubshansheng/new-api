@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 )
 
 const (
@@ -229,7 +230,7 @@ func normalizeLegacyRejectReason(values map[string]json.RawMessage) bool {
 // formatLogOtherJSON applies the role projection while keeping untouched JSON
 // values as RawMessage. This preserves integers larger than JavaScript's safe
 // range instead of round-tripping them through float64.
-func formatLogOtherJSON(value string, visibility logOtherVisibility) string {
+func formatLogOtherJSON(value string, visibility logOtherVisibility, modelName string, viewerRole int) string {
 	if value == "" {
 		return ""
 	}
@@ -243,6 +244,35 @@ func formatLogOtherJSON(value string, visibility logOtherVisibility) string {
 	}
 
 	changed := false
+	showUpstream, showSite := model_setting.ModelMappingVisibility(modelName, viewerRole)
+	if !showSite {
+		for _, key := range []string{"is_model_mapped", "upstream_model_name"} {
+			if _, exists := values[key]; exists {
+				delete(values, key)
+				changed = true
+			}
+		}
+	}
+	if (!showUpstream || !showSite) && values["response_model"] != nil {
+		var observation map[string]json.RawMessage
+		if err := common.Unmarshal(values["response_model"], &observation); err != nil || !showUpstream && !showSite {
+			delete(values, "response_model")
+		} else {
+			if !showUpstream {
+				delete(observation, "returned_model")
+			}
+			if !showSite {
+				delete(observation, "upstream_model")
+			}
+			encoded, err := common.Marshal(observation)
+			if err != nil {
+				delete(values, "response_model")
+			} else {
+				values["response_model"] = encoded
+			}
+		}
+		changed = true
+	}
 	if visibility == logOtherVisibilityUser {
 		for _, key := range []string{logOtherAdminInfoKey, logOtherRootInfoKey, logOtherAuditInfoKey} {
 			if _, exists := values[key]; exists {

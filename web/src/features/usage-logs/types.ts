@@ -295,8 +295,8 @@ export interface LogOtherData {
   // isResponseModelMismatch so old rows follow the current comparison rule.
   response_model?: {
     requested_model: string
-    upstream_model: string
-    returned_model: string
+    upstream_model?: string
+    returned_model?: string
   }
   audio_ratio?: number
   audio_completion_ratio?: number

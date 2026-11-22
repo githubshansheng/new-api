@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,9 @@ func setupLiandongControllerTestDB(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.AutoMigrate(
 		&model.Option{},
+		&model.UserAccessToken{},
+		&model.UserSession{},
+		&model.AuditLog{},
 		&model.TopUp{},
 		&model.SubscriptionPlan{},
 		&model.SubscriptionOrder{},
@@ -33,6 +37,7 @@ func setupLiandongControllerTestDB(t *testing.T) {
 		&model.LiandongUserOperationLease{},
 		&model.SystemTask{},
 	))
+	require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(common.GetTimestamp()))
 }
 
 func TestGetLiandongSubscriptionSpecIncludesUpgradeGroupRatio(t *testing.T) {
@@ -1042,16 +1047,17 @@ func TestLiandongPollHandlerStopsForExpiredProviderOrderWhenReconciliationDisabl
 func TestLiandongRootRoutesRejectAdminCredential(t *testing.T) {
 	setupLiandongControllerTestDB(t)
 	gin.SetMode(gin.TestMode)
-	accessToken := "liandong-admin-auth-test"
-	require.NoError(t, model.DB.Create(&model.User{
+	user := &model.User{
 		Username:    "liandong-admin",
 		Password:    "password",
 		Status:      common.UserStatusEnabled,
 		Role:        common.RoleAdminUser,
 		Group:       "default",
 		AffCode:     "LDAUTHADMIN",
-		AccessToken: &accessToken,
-	}).Error)
+		AuthVersion: 1,
+	}
+	require.NoError(t, model.DB.Create(user).Error)
+	accessToken := createLiandongScopedAccessToken(t, user.Id, "channel:read")
 	engine := gin.New()
 	handlerCalled := false
 	engine.GET("/root", middleware.RootAuth(), func(c *gin.Context) {
@@ -1072,16 +1078,17 @@ func TestLiandongRootRoutesRejectAdminCredential(t *testing.T) {
 func TestLiandongRootRouteAllowsRootCredential(t *testing.T) {
 	setupLiandongControllerTestDB(t)
 	gin.SetMode(gin.TestMode)
-	accessToken := "liandong-root-auth-test"
-	require.NoError(t, model.DB.Create(&model.User{
+	user := &model.User{
 		Username:    "liandong-root",
 		Password:    "password",
 		Status:      common.UserStatusEnabled,
 		Role:        common.RoleRootUser,
 		Group:       "default",
 		AffCode:     "LDAUTHROOT",
-		AccessToken: &accessToken,
-	}).Error)
+		AuthVersion: 1,
+	}
+	require.NoError(t, model.DB.Create(user).Error)
+	accessToken := createLiandongScopedAccessToken(t, user.Id, "option:read")
 	engine := gin.New()
 	engine.GET("/api/option/liandong", middleware.RootAuth(), GetLiandongSettings)
 
@@ -1093,4 +1100,19 @@ func TestLiandongRootRouteAllowsRootCredential(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.Contains(t, recorder.Body.String(), `"success":true`)
 	assert.Contains(t, recorder.Body.String(), `"merchant_token_configured":false`)
+}
+
+func createLiandongScopedAccessToken(t *testing.T, userID int, scopes ...string) string {
+	t.Helper()
+	suffix, err := common.GenerateRandomCharsKey(43)
+	require.NoError(t, err)
+	raw := model.AccessTokenPrefix + suffix
+	token := &model.UserAccessToken{
+		Name:      "liandong route token",
+		TokenHash: model.AccessTokenFingerprint(raw),
+		TokenHint: model.AccessTokenHint(raw),
+	}
+	require.NoError(t, token.SetScopes(scopes))
+	require.NoError(t, model.CreateUserAccessToken(userID, token, service.AccessTokenMaxPerUser))
+	return raw
 }
